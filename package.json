@@ -1,0 +1,20 @@
+{
+  "name": "estante-digital",
+  "version": "1.0.0",
+  "description": "Estante — Leitor Digital (E-Reader PWA)",
+  "main": "index.html",
+  "scripts": {
+    "start": "http-server -p 8000"
+  },
+  "keywords": [
+    "pwa",
+    "epub",
+    "pdf",
+    "reader"
+  ],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "http-server": "^14.1.1"
+  }
+}
