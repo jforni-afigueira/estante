@@ -1,0 +1,15 @@
+{
+  "name": "Estante — Leitor Digital",
+  "short_name": "Estante",
+  "description": "Leitor de EPUB e PDF com narração por voz, 100% local e gratuito.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#1B2129",
+  "theme_color": "#1B2129",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

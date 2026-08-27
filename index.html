@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>Estante — Leitor Digital</title>
+<meta name="description" content="Leitor de EPUB e PDF com narração por voz, 100% local e gratuito." />
+<meta name="theme-color" content="#1B2129" />
+
+<!-- PWA -->
+<link rel="manifest" href="manifest.json" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='16' fill='%231B2129'/%3E%3Cpath d='M28 22h44v56l-22-10-22 10z' fill='%237FA898'/%3E%3C/svg%3E" />
+
+<!-- Tailwind via CDN (sem build step) -->
+<script src="https://cdn.tailwindcss.com"></script>
+
+<!-- Tipografia: Fraunces (display, com personalidade de tipografia de livro antigo)
+     e Inter (interface, alta legibilidade em telas pequenas) -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;1,9..144,500&family=Inter:wght@400;500;600;700&family=Literata:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet">
+
+<!-- Bibliotecas de leitura (open-source, via CDN) -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/epub.js/0.3.93/epub.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+
+<style>
+  :root{
+    /* ===== Sistema de tokens — "Biblioteca Noturna" =====
+       Ink:        fundo principal (couro/tinta escura)
+       Verdigris:  acento primário (cobre oxidado — cor de lombada de livro antigo)
+       Brass:      acento secundário/metálico (marcadores, progresso)
+       Paper:      fundo claro (papel cru) — tema Claro
+       Sepia:      fundo leitura — tema Sépia
+       InkText:    texto sobre papel
+    */
+    --ink:        #1B2129;
+    --ink-soft:   #262E38;
+    --ink-line:   #384250;
+    --verdigris:  #6FA089;
+    --verdigris-dim: #4E7565;
+    --brass:      #C6A15B;
+    --paper:      #F4EEDF;
+    --sepia:      #EAD9B4;
+    --ink-text:   #2A2118;
+    --cream-text: #EDE6D6;
+  }
+
+  html, body { height: 100%; overscroll-behavior: none; }
+  body{
+    background: var(--ink);
+    color: var(--cream-text);
+    font-family: 'Inter', sans-serif;
+  }
+  .font-display{ font-family: 'Fraunces', serif; }
+
+  /* Textura sutil de "couro" no fundo — o elemento assinatura da estante */
+  .shelf-bg{
+    background-image:
+      radial-gradient(ellipse at top left, rgba(111,160,137,0.08), transparent 55%),
+      repeating-linear-gradient(180deg, rgba(255,255,255,0.015) 0px, rgba(255,255,255,0.015) 1px, transparent 1px, transparent 40px);
+  }
+
+  /* Lombada de livro — cada card da galeria tem uma barra lateral tipo lombada */
+  .book-spine{
+    box-shadow: inset 6px 0 0 0 var(--spine-color, var(--verdigris));
+  }
+
+  .cover-fallback{
+    background:
+      linear-gradient(160deg, var(--cover-a, #2E3B3A), var(--cover-b, #1B2129));
+  }
+
+  ::-webkit-scrollbar{ width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb{ background: var(--ink-line); border-radius: 8px; }
+  ::-webkit-scrollbar-track{ background: transparent; }
+
+  /* ===== Temas do leitor ===== */
+  .theme-claro{ background: var(--paper); color: var(--ink-text); }
+  .theme-sepia{ background: var(--sepia); color: var(--ink-text); }
+  .theme-escuro{ background: #15191E; color: #DCD5C4; }
+
+  .font-serif-reader{ font-family: 'Literata', Georgia, serif; }
+  .font-sans-reader{ font-family: 'Inter', sans-serif; }
+
+  /* Palavra sendo narrada — destaque dinâmico via onboundary */
+  .tts-highlight{
+    background: #FFE58A;
+    color: #241C08;
+    border-radius: 3px;
+    padding: 0 1px;
+    box-shadow: 0 0 0 2px #FFE58A;
+  }
+
+  #reader-frame iframe{ border: none; }
+
+  input[type="range"]{ accent-color: var(--verdigris); }
+
+  .modal-backdrop{ background: rgba(10,12,15,0.72); backdrop-filter: blur(3px); }
+
+  .focus-ring:focus-visible{
+    outline: 2px solid var(--brass);
+    outline-offset: 2px;
+  }
+
+  @media (prefers-reduced-motion: reduce){
+    *{ animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
+  }
+</style>
+</head>
+<body class="shelf-bg min-h-screen">
+
+<!-- =========================================================
+     TELA 1 — ESTANTE (Galeria de livros importados)
+     ========================================================= -->
+<div id="view-library" class="min-h-screen flex flex-col">
+
+  <header class="sticky top-0 z-20 border-b border-white/5 bg-[var(--ink)]/90 backdrop-blur">
+    <div class="max-w-5xl mx-auto px-5 py-4 flex items-center justify-between gap-4">
+      <div class="flex items-center gap-3">
+        <svg width="30" height="30" viewBox="0 0 100 100" aria-hidden="true">
+          <rect width="100" height="100" rx="18" fill="#262E38"/>
+          <path d="M28 22h44v56l-22-10-22 10z" fill="#6FA089"/>
+        </svg>
+        <h1 class="font-display text-2xl tracking-tight">Estante</h1>
+      </div>
+      <div class="flex items-center gap-2">
+        <input id="file-input" type="file" accept=".epub,.pdf" multiple class="hidden" />
+        <button id="btn-import" class="focus-ring flex items-center gap-2 bg-[var(--verdigris)] hover:bg-[var(--verdigris-dim)] text-[#101613] font-medium px-4 py-2 rounded-full text-sm transition-colors">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 21h16"/></svg>
+          Importar livro
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <main class="flex-1 max-w-5xl mx-auto w-full px-5 py-8">
+    <!-- Estado vazio -->
+    <div id="empty-state" class="hidden flex-col items-center justify-center text-center py-24 gap-3">
+      <svg width="56" height="56" viewBox="0 0 100 100" class="opacity-40" aria-hidden="true">
+        <path d="M28 22h44v56l-22-10-22 10z" fill="none" stroke="#8B9199" stroke-width="4"/>
+      </svg>
+      <p class="font-display text-xl text-[color:var(--cream-text)]/80">Sua estante está vazia</p>
+      <p class="text-sm text-white/50 max-w-sm">Importe um arquivo .epub ou .pdf para começar a ler. Tudo fica salvo apenas no seu dispositivo.</p>
+    </div>
+
+    <div id="library-grid" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-5"></div>
+  </main>
+</div>
+
+<!-- =========================================================
+     TELA 2 — LEITOR
+     ========================================================= -->
+<div id="view-reader" class="hidden min-h-screen flex flex-col theme-claro font-sans-reader" style="font-size: 18px;">
+
+  <!-- Barra superior -->
+  <header class="sticky top-0 z-30 flex items-center justify-between gap-2 px-3 sm:px-5 py-2.5 border-b border-black/10 bg-inherit">
+    <button id="btn-back" aria-label="Voltar para a estante" class="focus-ring p-2 rounded-full hover:bg-black/5">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 18l-6-6 6-6"/></svg>
+    </button>
+    <h2 id="reader-title" class="font-display text-sm sm:text-base truncate flex-1 text-center opacity-80"></h2>
+    <button id="btn-a11y" aria-label="Ajustes de leitura" class="focus-ring p-2 rounded-full hover:bg-black/5">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 21v-7M4 10V3M12 21v-11M12 6V3M20 21v-5M20 12V3M1 14h6M9 6h6M17 16h6"/></svg>
+    </button>
+  </header>
+
+  <!-- Área de conteúdo (epub.js ou pdf.js injetam aqui) -->
+  <div id="reader-frame" class="flex-1 relative overflow-hidden"></div>
+
+  <!-- Barra de progresso -->
+  <div class="px-4 py-2 border-t border-black/10 bg-inherit">
+    <div class="flex items-center gap-3 text-xs opacity-70 mb-1">
+      <span id="progress-label">Página 0 de 0</span>
+      <span class="ml-auto" id="progress-percent">0%</span>
+    </div>
+    <div class="h-1.5 rounded-full bg-black/10 overflow-hidden">
+      <div id="progress-bar" class="h-full bg-[var(--verdigris)] rounded-full transition-all" style="width:0%"></div>
+    </div>
+  </div>
+
+  <!-- Barra de narração (TTS) -->
+  <div class="px-4 py-3 border-t border-black/10 bg-inherit flex items-center gap-3 flex-wrap">
+    <button id="btn-tts-toggle" aria-label="Ouvir narração" class="focus-ring flex items-center gap-2 bg-[var(--verdigris)] text-[#101613] px-4 py-2 rounded-full text-sm font-medium">
+      <svg id="icon-play" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+      <svg id="icon-pause" width="14" height="14" viewBox="0 0 24 24" fill="currentColor" class="hidden"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>
+      <span id="tts-label">Ouvir</span>
+    </button>
+    <label class="flex items-center gap-2 text-xs opacity-70">
+      Velocidade
+      <input id="tts-speed" type="range" min="0.5" max="2" step="0.1" value="1" class="w-24 align-middle" />
+      <span id="tts-speed-val" class="tabular-nums w-8">1.0x</span>
+    </label>
+  </div>
+</div>
+
+<!-- =========================================================
+     MODAL — Menu de acessibilidade / customização
+     ========================================================= -->
+<div id="modal-a11y" class="hidden fixed inset-0 z-40 modal-backdrop flex items-end sm:items-center justify-center">
+  <div class="bg-[var(--ink-soft)] text-[var(--cream-text)] w-full sm:max-w-md rounded-t-2xl sm:rounded-2xl p-6 space-y-5 max-h-[85vh] overflow-y-auto">
+    <div class="flex items-center justify-between">
+      <h3 class="font-display text-lg">Ajustes de leitura</h3>
+      <button id="btn-close-a11y" aria-label="Fechar" class="focus-ring p-1 rounded-full hover:bg-white/10">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+
+    <div>
+      <p class="text-xs uppercase tracking-wide opacity-60 mb-2">Tema</p>
+      <div class="grid grid-cols-3 gap-2" id="theme-options">
+        <button data-theme="claro" class="focus-ring theme-opt border border-white/15 rounded-lg py-2 text-sm" style="background:#F4EEDF;color:#2A2118">Claro</button>
+        <button data-theme="sepia" class="focus-ring theme-opt border border-white/15 rounded-lg py-2 text-sm" style="background:#EAD9B4;color:#2A2118">Sépia</button>
+        <button data-theme="escuro" class="focus-ring theme-opt border border-white/15 rounded-lg py-2 text-sm" style="background:#15191E;color:#DCD5C4">Escuro</button>
+      </div>
+    </div>
+
+    <div>
+      <p class="text-xs uppercase tracking-wide opacity-60 mb-2">Fonte</p>
+      <div class="grid grid-cols-2 gap-2">
+        <button data-font="sans" class="focus-ring font-opt border border-white/15 rounded-lg py-2 text-sm font-sans-reader">Sans-serif</button>
+        <button data-font="serif" class="focus-ring font-opt border border-white/15 rounded-lg py-2 text-sm font-serif-reader">Serifada</button>
+      </div>
+    </div>
+
+    <div>
+      <p class="text-xs uppercase tracking-wide opacity-60 mb-2">Tamanho do texto</p>
+      <div class="flex items-center gap-3">
+        <button id="font-dec" class="focus-ring w-9 h-9 rounded-full border border-white/15 text-lg">A-</button>
+        <span id="font-size-val" class="text-sm w-10 text-center tabular-nums">18px</span>
+        <button id="font-inc" class="focus-ring w-9 h-9 rounded-full border border-white/15 text-lg">A+</button>
+      </div>
+    </div>
+
+    <div>
+      <p class="text-xs uppercase tracking-wide opacity-60 mb-2">Modo de visualização</p>
+      <div class="grid grid-cols-2 gap-2">
+        <button data-flow="paginated" class="focus-ring flow-opt border border-white/15 rounded-lg py-2 text-sm">Paginado</button>
+        <button data-flow="scrolled" class="focus-ring flow-opt border border-white/15 rounded-lg py-2 text-sm">Rolagem</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Overlay de carregamento -->
+<div id="loading-overlay" class="hidden fixed inset-0 z-50 bg-[var(--ink)] flex flex-col items-center justify-center gap-3">
+  <svg class="animate-spin" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#6FA089" stroke-width="2"><circle cx="12" cy="12" r="9" stroke-opacity="0.25"/><path d="M21 12a9 9 0 00-9-9"/></svg>
+  <p id="loading-label" class="text-sm text-white/70">Abrindo livro…</p>
+</div>
+
+<script src="app.js"></script>
+<script src="reader.js"></script>
+</body>
+</html>
