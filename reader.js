@@ -94,15 +94,27 @@ async function loadEpub(book) {
   const blob = new Blob([book.fileData], { type: "application/epub+zip" });
   epubBook = ePub(blob);
 
+  const flow = book.prefs.flow === "scrolled" ? "scrolled" : "paginated";
+  const manager = book.prefs.flow === "scrolled" ? "continuous" : "default";
+
   epubRendition = epubBook.renderTo(readerFrame, {
     width: "100%",
     height: "100%",
-    flow: book.prefs.flow === "scrolled" ? "scrolled-doc" : "paginated",
+    flow: flow,
+    manager: manager,
     spread: "none",
   });
 
-  // Injeta estilos básicos e fontes do leitor no iframe do EPUB
+  // Injeta estilos básicos, margens e fontes do leitor no iframe do EPUB.
+  // Também força o texto a herdar cores e ter fundos transparentes para respeitar os temas Claro/Sépia/Escuro.
   epubRendition.themes.default({
+    "body": {
+      "padding": "0 24px !important"
+    },
+    "p, span, div, li, h1, h2, h3, h4, h5, h6": {
+      "background-color": "transparent !important",
+      "color": "inherit !important"
+    },
     "@import": "url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Literata:ital,wght@0,400;0,600;1,400&display=swap')",
     ".tts-highlight": {
       "background-color": "#FFE58A !important",
@@ -495,7 +507,7 @@ function stopSpeaking() {
 function setTtsButtonState(isSpeaking) {
   iconPlay.classList.toggle("hidden", isSpeaking);
   iconPause.classList.toggle("hidden", !isSpeaking);
-  ttsLabel.textContent = isSpeaking ? "Pausar" : "Ouvir";
+  if (ttsLabel) ttsLabel.textContent = isSpeaking ? "Pausar" : "Ouvir";
 }
 
 btnTtsToggle.addEventListener("click", () => {
@@ -505,6 +517,51 @@ btnTtsToggle.addEventListener("click", () => {
     stopSpeaking();
   } else {
     speakFrom(ttsCurrentIndex || 0);
+  }
+});
+
+// Eventos do painel de controle do leitor
+document.getElementById("btn-prev-page").addEventListener("click", () => {
+  if (currentType === "epub" && epubRendition) {
+    stopSpeaking();
+    epubRendition.prev();
+  } else if (currentType === "pdf") {
+    goToPdfPage(pdfCurrentPage - 1);
+  }
+});
+
+document.getElementById("btn-next-page").addEventListener("click", () => {
+  if (currentType === "epub" && epubRendition) {
+    stopSpeaking();
+    epubRendition.next();
+  } else if (currentType === "pdf") {
+    goToPdfPage(pdfCurrentPage + 1);
+  }
+});
+
+document.getElementById("btn-tts-prev").addEventListener("click", () => {
+  if (!ttsWords.length) return;
+  const wasSpeaking = ttsSpeaking;
+  // Retrocede 15 palavras ou vai para o começo
+  const newIndex = Math.max(0, ttsCurrentIndex - 15);
+  ttsCurrentIndex = newIndex;
+  if (wasSpeaking) {
+    speakFrom(newIndex);
+  } else {
+    highlightWord(newIndex);
+  }
+});
+
+document.getElementById("btn-tts-next").addEventListener("click", () => {
+  if (!ttsWords.length) return;
+  const wasSpeaking = ttsSpeaking;
+  // Avança 15 palavras ou vai para o fim
+  const newIndex = Math.min(ttsWords.length - 1, ttsCurrentIndex + 15);
+  ttsCurrentIndex = newIndex;
+  if (wasSpeaking) {
+    speakFrom(newIndex);
+  } else {
+    highlightWord(newIndex);
   }
 });
 

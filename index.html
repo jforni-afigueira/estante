@@ -178,18 +178,48 @@
     </div>
   </div>
 
-  <!-- Barra de narração (TTS) -->
-  <div class="px-4 py-3 border-t border-black/10 bg-inherit flex items-center gap-3 flex-wrap">
-    <button id="btn-tts-toggle" aria-label="Ouvir narração" class="focus-ring flex items-center gap-2 bg-[var(--verdigris)] text-[#101613] px-4 py-2 rounded-full text-sm font-medium">
-      <svg id="icon-play" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
-      <svg id="icon-pause" width="14" height="14" viewBox="0 0 24 24" fill="currentColor" class="hidden"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>
-      <span id="tts-label">Ouvir</span>
-    </button>
-    <label class="flex items-center gap-2 text-xs opacity-70">
-      Velocidade
-      <input id="tts-speed" type="range" min="0.5" max="2" step="0.1" value="1" class="w-24 align-middle" />
-      <span id="tts-speed-val" class="tabular-nums w-8">1.0x</span>
-    </label>
+  <!-- Barra de narração (TTS) e navegação -->
+  <div class="px-4 py-3 border-t border-black/10 bg-inherit flex items-center justify-between gap-4 flex-wrap sm:flex-nowrap">
+    <!-- Velocidade (Esquerda) -->
+    <div class="flex items-center gap-2 flex-shrink-0">
+      <label class="flex items-center gap-1.5 text-xs opacity-70">
+        Velocidade
+        <input id="tts-speed" type="range" min="0.5" max="2" step="0.1" value="1" class="w-20 sm:w-24 align-middle" />
+        <span id="tts-speed-val" class="tabular-nums w-8">1.0x</span>
+      </label>
+    </div>
+
+    <!-- Player Completo (Centro) -->
+    <div class="flex items-center gap-3.5 mx-auto">
+      <!-- Voltar Página -->
+      <button id="btn-prev-page" title="Página anterior" class="focus-ring p-2 rounded-full hover:bg-black/5 text-[var(--verdigris)] hover:text-[var(--verdigris-dim)] transition-colors" aria-label="Página anterior">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+      </button>
+
+      <!-- Retroceder TTS (Voltar frase) -->
+      <button id="btn-tts-prev" title="Retroceder 15 palavras" class="focus-ring p-2 rounded-full hover:bg-black/5 text-[var(--verdigris)] hover:text-[var(--verdigris-dim)] transition-colors" aria-label="Retroceder leitura">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M11 17l-5-5 5-5m7 10l-5-5 5-5"/></svg>
+      </button>
+
+      <!-- Play / Pause -->
+      <button id="btn-tts-toggle" aria-label="Ouvir narração" class="focus-ring w-12 h-12 flex items-center justify-center bg-[var(--verdigris)] hover:bg-[var(--verdigris-dim)] text-[#101613] rounded-full shadow-md transition-all hover:scale-105">
+        <svg id="icon-play" width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+        <svg id="icon-pause" width="20" height="20" viewBox="0 0 24 24" fill="currentColor" class="hidden"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>
+      </button>
+
+      <!-- Adiantar TTS (Avançar frase) -->
+      <button id="btn-tts-next" title="Avançar 15 palavras" class="focus-ring p-2 rounded-full hover:bg-black/5 text-[var(--verdigris)] hover:text-[var(--verdigris-dim)] transition-colors" aria-label="Adiantar leitura">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M13 17l5-5-5-5M6 17l5-5-5-5"/></svg>
+      </button>
+
+      <!-- Próxima Página -->
+      <button id="btn-next-page" title="Próxima página" class="focus-ring p-2 rounded-full hover:bg-black/5 text-[var(--verdigris)] hover:text-[var(--verdigris-dim)] transition-colors" aria-label="Próxima página">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>
+      </button>
+    </div>
+
+    <!-- Espaçador invisível na direita (apenas em telas maiores) para centralizar visualmente o player -->
+    <div class="hidden sm:block w-28 flex-shrink-0"></div>
   </div>
 </div>
 
