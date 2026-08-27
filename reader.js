@@ -90,14 +90,27 @@ btnBack.addEventListener("click", closeReader);
 
 async function loadEpub(book) {
   readerFrame.innerHTML = "";
-  // epub.js precisa da própria cópia do ArrayBuffer
-  epubBook = ePub(book.fileData.slice(0));
+  // Cria um Blob do ArrayBuffer do EPUB para aumentar a estabilidade do epub.js
+  const blob = new Blob([book.fileData], { type: "application/epub+zip" });
+  epubBook = ePub(blob);
 
   epubRendition = epubBook.renderTo(readerFrame, {
     width: "100%",
     height: "100%",
     flow: book.prefs.flow === "scrolled" ? "scrolled-doc" : "paginated",
     spread: "none",
+  });
+
+  // Injeta estilos básicos e fontes do leitor no iframe do EPUB
+  epubRendition.themes.default({
+    "@import": "url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Literata:ital,wght@0,400;0,600;1,400&display=swap')",
+    ".tts-highlight": {
+      "background-color": "#FFE58A !important",
+      "color": "#241C08 !important",
+      "border-radius": "3px",
+      "padding": "0 1px",
+      "box-shadow": "0 0 0 2px #FFE58A"
+    }
   });
 
   registerEpubThemes();
@@ -122,17 +135,45 @@ async function loadEpub(book) {
 
   // Sempre que uma nova seção é desenhada na tela, preparamos o texto
   // dela para poder ser narrado (envolvendo cada palavra em um <span>).
-  epubRendition.on("rendered", () => {
-    const contents = epubRendition.getContents();
-    contents.forEach((c) => wrapWordsForTts(c.document.body));
+  epubRendition.on("rendered", (section, view) => {
+    try {
+      const contents = epubRendition.getContents();
+      if (contents) {
+        contents.forEach((c) => {
+          if (c && c.document && c.document.body) {
+            wrapWordsForTts(c.document.body);
+          }
+        });
+      }
+    } catch (err) {
+      console.warn("Erro ao preparar texto para TTS:", err);
+    }
+
+    // Escuta cliques dentro do documento do iframe para navegação de página
+    if (view && view.document) {
+      view.document.addEventListener("click", (e) => {
+        const x = e.clientX / view.document.documentElement.clientWidth;
+        if (x < 0.25) {
+          stopSpeaking();
+          epubRendition.prev();
+        } else if (x > 0.75) {
+          stopSpeaking();
+          epubRendition.next();
+        }
+      });
+    }
   });
 
-  // Navegação: toca no terço esquerdo/direito da tela para virar a página,
-  // como em qualquer leitor de e-book (clique/swipe).
+  // Navegação fallback no container principal (caso o clique caia fora do iframe)
   readerFrame.addEventListener("click", (e) => {
     const x = e.clientX / window.innerWidth;
-    if (x < 0.25) epubRendition.prev();
-    else if (x > 0.75) epubRendition.next();
+    if (x < 0.25) {
+      stopSpeaking();
+      epubRendition.prev();
+    } else if (x > 0.75) {
+      stopSpeaking();
+      epubRendition.next();
+    }
   });
 }
 

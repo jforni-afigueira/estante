@@ -170,8 +170,8 @@ async function importFile(file) {
 /** Extrai título, autor e capa (se existir) de um EPUB usando epub.js. */
 async function extractEpubMetadata(arrayBuffer) {
   try {
-    // epub.js precisa de uma cópia própria do buffer (ele "consome" o original)
-    const book = ePub(arrayBuffer.slice(0));
+    const blob = new Blob([arrayBuffer], { type: "application/epub+zip" });
+    const book = ePub(blob);
     await book.ready;
     const metadata = await book.loaded.metadata;
 
