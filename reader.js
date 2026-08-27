@@ -16,6 +16,9 @@ const btnBack = document.getElementById("btn-back");
 const btnA11y = document.getElementById("btn-a11y");
 const modalA11y = document.getElementById("modal-a11y");
 const btnCloseA11y = document.getElementById("btn-close-a11y");
+const readerCoverThumb = document.getElementById("reader-cover-thumb");
+const btnBookmark = document.getElementById("btn-bookmark");
+const iconBookmark = document.getElementById("icon-bookmark");
 
 const progressLabel = document.getElementById("progress-label");
 const progressPercent = document.getElementById("progress-percent");
@@ -52,6 +55,15 @@ async function openReader(bookId) {
   currentType = book.type;
   readerTitle.textContent = book.title;
 
+  // Exibe a miniatura da capa do livro se existir
+  if (book.cover && readerCoverThumb) {
+    readerCoverThumb.src = book.cover;
+    readerCoverThumb.classList.remove("hidden");
+  } else if (readerCoverThumb) {
+    readerCoverThumb.src = "";
+    readerCoverThumb.classList.add("hidden");
+  }
+
   viewLibrary.classList.add("hidden");
   viewReader.classList.remove("hidden");
 
@@ -77,6 +89,13 @@ function closeReader() {
   epubBook = null;
   pdfDoc = null;
   readerFrame.innerHTML = "";
+
+  // Oculta a miniatura da capa ao fechar o leitor
+  if (readerCoverThumb) {
+    readerCoverThumb.src = "";
+    readerCoverThumb.classList.add("hidden");
+  }
+
   viewReader.classList.add("hidden");
   viewLibrary.classList.remove("hidden");
   currentBook = null;
@@ -90,9 +109,9 @@ btnBack.addEventListener("click", closeReader);
 
 async function loadEpub(book) {
   readerFrame.innerHTML = "";
-  // Cria um Blob do ArrayBuffer do EPUB para aumentar a estabilidade do epub.js
-  const blob = new Blob([book.fileData], { type: "application/epub+zip" });
-  epubBook = ePub(blob);
+  // Inicializa o epub.js e abre o ArrayBuffer diretamente (método mais estável)
+  epubBook = ePub();
+  await epubBook.open(book.fileData);
 
   const flow = book.prefs.flow === "scrolled" ? "scrolled" : "paginated";
   const manager = book.prefs.flow === "scrolled" ? "continuous" : "default";
@@ -130,8 +149,12 @@ async function loadEpub(book) {
   epubRendition.themes.fontSize(book.prefs.fontSize + "px");
   setEpubFontFamily(book.prefs.font);
 
-  // Restaura a posição salva, ou começa do início
-  await epubRendition.display(book.progress.location || undefined);
+  // Restaura a posição salva com segurança, evitando falhas de display(undefined)
+  if (book.progress && book.progress.location) {
+    await epubRendition.display(book.progress.location);
+  } else {
+    await epubRendition.display();
+  }
 
   // Gera o índice de localizações em segundo plano (necessário para % de progresso).
   // Comentário: em livros grandes isso pode levar alguns segundos — por isso não
@@ -454,7 +477,7 @@ async function speakFrom(startIndex) {
   ttsUtterance = new SpeechSynthesisUtterance(text);
   ttsUtterance.lang = "pt-BR";
   if (cachedVoice) ttsUtterance.voice = cachedVoice;
-  ttsUtterance.rate = parseFloat(ttsSpeed.value || "1");
+  ttsUtterance.rate = parseFloat(ttsSpeed.value || "2");
 
   ttsUtterance.onboundary = (event) => {
     if (event.name && event.name !== "word") return; // alguns navegadores também disparam 'sentence'
@@ -539,31 +562,115 @@ document.getElementById("btn-next-page").addEventListener("click", () => {
   }
 });
 
-document.getElementById("btn-tts-prev").addEventListener("click", () => {
+// Navega entre parágrafos (TTS skip por parágrafos)
+function skipParagraph(direction) {
   if (!ttsWords.length) return;
-  const wasSpeaking = ttsSpeaking;
-  // Retrocede 15 palavras ou vai para o começo
-  const newIndex = Math.max(0, ttsCurrentIndex - 15);
+
+  // 1. Identifica a palavra atual
+  const currentWordObj = ttsWords[ttsCurrentIndex];
+  if (!currentWordObj || !currentWordObj.el) return;
+
+  const currentEl = currentWordObj.el;
+  const doc = currentEl.ownerDocument || document;
+
+  // 2. Encontra o parágrafo do elemento atual
+  const currentPara = currentEl.closest("p, li, h1, h2, h3, h4, h5, h6, [class*='paragraph']");
+  if (!currentPara) {
+    // Fallback se não encontrar container semântico
+    ttsSkipWords(direction * 15);
+    return;
+  }
+
+  // 3. Busca todos os elementos de parágrafo no documento que contêm palavras do TTS
+  const allParas = Array.from(doc.querySelectorAll("p, li, h1, h2, h3, h4, h5, h6, [class*='paragraph']"))
+    .filter(p => p.querySelector(".tts-word"));
+
+  // 4. Acha o índice do parágrafo atual
+  const currentParaIndex = allParas.indexOf(currentPara);
+  if (currentParaIndex === -1) {
+    ttsSkipWords(direction * 15);
+    return;
+  }
+
+  // 5. Determina o parágrafo de destino
+  const targetParaIndex = currentParaIndex + direction;
+  if (targetParaIndex < 0 || targetParaIndex >= allParas.length) {
+    // Limite atingido: início ou fim do texto da seção
+    if (direction === -1) {
+      ttsCurrentIndex = 0;
+    } else {
+      ttsCurrentIndex = ttsWords.length - 1;
+    }
+  } else {
+    // 6. Encontra a primeira palavra do parágrafo de destino
+    const targetPara = allParas[targetParaIndex];
+    const firstWordInTarget = targetPara.querySelector(".tts-word");
+    if (firstWordInTarget) {
+      const idx = ttsWords.findIndex(w => w.el === firstWordInTarget);
+      if (idx !== -1) {
+        ttsCurrentIndex = idx;
+      }
+    }
+  }
+
+  // 7. Retoma a fala ou atualiza realce
+  if (ttsSpeaking) {
+    speakFrom(ttsCurrentIndex);
+  } else {
+    highlightWord(ttsCurrentIndex);
+  }
+}
+
+function ttsSkipWords(count) {
+  const newIndex = Math.max(0, Math.min(ttsWords.length - 1, ttsCurrentIndex + count));
   ttsCurrentIndex = newIndex;
-  if (wasSpeaking) {
+  if (ttsSpeaking) {
     speakFrom(newIndex);
   } else {
     highlightWord(newIndex);
   }
+}
+
+document.getElementById("btn-tts-prev").addEventListener("click", () => {
+  skipParagraph(-1);
 });
 
 document.getElementById("btn-tts-next").addEventListener("click", () => {
-  if (!ttsWords.length) return;
-  const wasSpeaking = ttsSpeaking;
-  // Avança 15 palavras ou vai para o fim
-  const newIndex = Math.min(ttsWords.length - 1, ttsCurrentIndex + 15);
-  ttsCurrentIndex = newIndex;
-  if (wasSpeaking) {
-    speakFrom(newIndex);
-  } else {
-    highlightWord(newIndex);
-  }
+  skipParagraph(1);
 });
+
+// Marcador manual (Bookmark) no cabeçalho
+if (btnBookmark) {
+  btnBookmark.addEventListener("click", async () => {
+    if (!currentBook) return;
+
+    // Salva o progresso atual imediatamente
+    if (currentType === "epub" && epubRendition) {
+      const loc = epubRendition.currentLocation();
+      if (loc && loc.start) {
+        updateEpubProgress(loc);
+      }
+    } else if (currentType === "pdf") {
+      updatePdfProgress();
+    }
+
+    await patchBook(currentBook.id, { progress: currentBook.progress });
+
+    // Feedback visual animado no título do leitor
+    if (iconBookmark) iconBookmark.setAttribute("fill", "currentColor");
+    const originalTitle = readerTitle.textContent;
+    readerTitle.textContent = "🔖 Marcador Salvo!";
+    readerTitle.classList.add("text-[var(--brass)]");
+
+    setTimeout(() => {
+      if (iconBookmark) iconBookmark.setAttribute("fill", "none");
+      if (currentBook) {
+        readerTitle.textContent = currentBook.title;
+      }
+      readerTitle.classList.remove("text-[var(--brass)]");
+    }, 1800);
+  });
+}
 
 ttsSpeed.addEventListener("input", () => {
   ttsSpeedVal.textContent = `${parseFloat(ttsSpeed.value).toFixed(1)}x`;

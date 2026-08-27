@@ -90,6 +90,17 @@ async function getAllBooks() {
   });
 }
 
+/** Remove um livro completo do banco local. */
+async function deleteBook(id) {
+  const db = await getDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_BOOKS, "readwrite");
+    tx.objectStore(STORE_BOOKS).delete(id);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
 /* --------------------------------------------------------------------
    Importação de arquivos
    -------------------------------------------------------------------- */
@@ -131,7 +142,14 @@ fileInput.addEventListener("change", async (e) => {
 /** Lê o arquivo escolhido, extrai metadados/capa e grava no IndexedDB. */
 async function importFile(file) {
   const ext = file.name.toLowerCase().endsWith(".pdf") ? "pdf" : "epub";
-  const arrayBuffer = await file.arrayBuffer();
+
+  // Utiliza FileReader para maior compatibilidade de leitura do buffer em todos os navegadores
+  const arrayBuffer = await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error);
+    reader.readAsArrayBuffer(file);
+  });
 
   let title = file.name.replace(/\.(epub|pdf)$/i, "");
   let author = "";
@@ -170,8 +188,8 @@ async function importFile(file) {
 /** Extrai título, autor e capa (se existir) de um EPUB usando epub.js. */
 async function extractEpubMetadata(arrayBuffer) {
   try {
-    const blob = new Blob([arrayBuffer], { type: "application/epub+zip" });
-    const book = ePub(blob);
+    const book = ePub();
+    await book.open(arrayBuffer);
     await book.ready;
     const metadata = await book.loaded.metadata;
 
@@ -258,10 +276,9 @@ async function renderLibrary() {
   emptyState.classList.toggle("hidden", books.length > 0);
 
   for (const book of books) {
-    const card = document.createElement("button");
+    const card = document.createElement("div");
     card.className =
-      "focus-ring group text-left rounded-lg overflow-hidden bg-[var(--ink-soft)] border border-white/5 hover:border-[var(--verdigris)]/60 transition-colors";
-    card.setAttribute("aria-label", `Abrir ${book.title}`);
+      "focus-ring group relative text-left rounded-lg overflow-hidden bg-[var(--ink-soft)] border border-white/5 hover:border-[var(--verdigris)]/60 transition-colors";
 
     const spine = spineColorFor(book.title);
     const coverInner = book.cover
@@ -273,20 +290,37 @@ async function renderLibrary() {
     const pct = Math.round(book.progress?.percent || 0);
 
     card.innerHTML = `
-      <div class="book-spine" style="--spine-color:${spine}">
-        ${coverInner}
-      </div>
-      <div class="p-2.5">
-        <p class="text-xs font-medium truncate">${escapeHtml(book.title)}</p>
-        <p class="text-[11px] text-white/45 truncate">${escapeHtml(book.author || (book.type === "pdf" ? "PDF" : "EPUB"))}</p>
-        ${pct > 0 ? `
-          <div class="h-1 mt-2 rounded-full bg-white/10 overflow-hidden">
-            <div class="h-full bg-[var(--verdigris)]" style="width:${pct}%"></div>
-          </div>` : ""}
-      </div>
+      <button class="w-full text-left" aria-label="Abrir ${book.title}">
+        <div class="book-spine" style="--spine-color:${spine}">
+          ${coverInner}
+        </div>
+        <div class="p-2.5 pr-8">
+          <p class="text-xs font-medium truncate">${escapeHtml(book.title)}</p>
+          <p class="text-[11px] text-white/45 truncate">${escapeHtml(book.author || (book.type === "pdf" ? "PDF" : "EPUB"))}</p>
+          ${pct > 0 ? `
+            <div class="h-1 mt-2 rounded-full bg-white/10 overflow-hidden">
+              <div class="h-full bg-[var(--verdigris)]" style="width:${pct}%"></div>
+            </div>` : ""}
+        </div>
+      </button>
+      <button class="btn-delete-book absolute bottom-2.5 right-2 p-1.5 rounded-full bg-black/40 hover:bg-red-500/80 text-white/80 hover:text-white opacity-0 group-hover:opacity-100 focus:opacity-100 transition-all" title="Excluir livro" aria-label="Excluir ${book.title}">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></svg>
+      </button>
     `;
 
-    card.addEventListener("click", () => openReader(book.id));
+    // Abertura do livro ao clicar no botão da capa/detalhes
+    card.querySelector("button").addEventListener("click", () => openReader(book.id));
+
+    // Exclusão do livro ao clicar na lixeira com confirmação
+    card.querySelector(".btn-delete-book").addEventListener("click", async (e) => {
+      e.stopPropagation();
+      const confirmDelete = confirm(`Deseja mesmo excluir "${book.title}" da sua estante?`);
+      if (confirmDelete) {
+        await deleteBook(book.id);
+        await renderLibrary();
+      }
+    });
+
     libraryGrid.appendChild(card);
   }
 }

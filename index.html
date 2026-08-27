@@ -158,7 +158,16 @@
     <button id="btn-back" aria-label="Voltar para a estante" class="focus-ring p-2 rounded-full hover:bg-black/5">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 18l-6-6 6-6"/></svg>
     </button>
-    <h2 id="reader-title" class="font-display text-sm sm:text-base truncate flex-1 text-center opacity-80"></h2>
+    <div class="flex items-center gap-2 flex-1 justify-center min-w-0">
+      <img id="reader-cover-thumb" src="" alt="" class="hidden w-6 h-8 object-cover rounded border border-white/10 shadow-sm flex-shrink-0" />
+      <h2 id="reader-title" class="font-display text-sm sm:text-base truncate opacity-80"></h2>
+    </div>
+    <!-- Marcador de página manual -->
+    <button id="btn-bookmark" aria-label="Salvar marcador" title="Salvar marcador" class="focus-ring p-2 rounded-full hover:bg-black/5 text-[var(--verdigris)] transition-colors">
+      <svg id="icon-bookmark" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/>
+      </svg>
+    </button>
     <button id="btn-a11y" aria-label="Ajustes de leitura" class="focus-ring p-2 rounded-full hover:bg-black/5">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 21v-7M4 10V3M12 21v-11M12 6V3M20 21v-5M20 12V3M1 14h6M9 6h6M17 16h6"/></svg>
     </button>
@@ -184,8 +193,8 @@
     <div class="flex items-center gap-2 flex-shrink-0">
       <label class="flex items-center gap-1.5 text-xs opacity-70">
         Velocidade
-        <input id="tts-speed" type="range" min="0.5" max="2" step="0.1" value="1" class="w-20 sm:w-24 align-middle" />
-        <span id="tts-speed-val" class="tabular-nums w-8">1.0x</span>
+        <input id="tts-speed" type="range" min="0.5" max="3" step="0.1" value="2" class="w-20 sm:w-24 align-middle" />
+        <span id="tts-speed-val" class="tabular-nums w-8">2.0x</span>
       </label>
     </div>
 
@@ -196,8 +205,8 @@
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
       </button>
 
-      <!-- Retroceder TTS (Voltar frase) -->
-      <button id="btn-tts-prev" title="Retroceder 15 palavras" class="focus-ring p-2 rounded-full hover:bg-black/5 text-[var(--verdigris)] hover:text-[var(--verdigris-dim)] transition-colors" aria-label="Retroceder leitura">
+      <!-- Retroceder TTS (Voltar parágrafo) -->
+      <button id="btn-tts-prev" title="Parágrafo anterior" class="focus-ring p-2 rounded-full hover:bg-black/5 text-[var(--verdigris)] hover:text-[var(--verdigris-dim)] transition-colors" aria-label="Retroceder parágrafo">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M11 17l-5-5 5-5m7 10l-5-5 5-5"/></svg>
       </button>
 
@@ -207,8 +216,8 @@
         <svg id="icon-pause" width="20" height="20" viewBox="0 0 24 24" fill="currentColor" class="hidden"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>
       </button>
 
-      <!-- Adiantar TTS (Avançar frase) -->
-      <button id="btn-tts-next" title="Avançar 15 palavras" class="focus-ring p-2 rounded-full hover:bg-black/5 text-[var(--verdigris)] hover:text-[var(--verdigris-dim)] transition-colors" aria-label="Adiantar leitura">
+      <!-- Adiantar TTS (Avançar parágrafo) -->
+      <button id="btn-tts-next" title="Próximo parágrafo" class="focus-ring p-2 rounded-full hover:bg-black/5 text-[var(--verdigris)] hover:text-[var(--verdigris-dim)] transition-colors" aria-label="Adiantar parágrafo">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M13 17l5-5-5-5M6 17l5-5-5-5"/></svg>
       </button>
 
