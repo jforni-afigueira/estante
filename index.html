@@ -159,7 +159,7 @@
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 18l-6-6 6-6"/></svg>
     </button>
     <div class="flex items-center gap-2 flex-1 justify-center min-w-0">
-      <img id="reader-cover-thumb" src="" alt="" class="hidden w-6 h-8 object-cover rounded border border-white/10 shadow-sm flex-shrink-0" />
+      <img id="reader-cover-thumb" src="" alt="Capa" class="hidden w-6 h-8 object-cover rounded border border-white/10 shadow-sm flex-shrink-0 cursor-pointer hover:scale-110 transition-transform" />
       <h2 id="reader-title" class="font-display text-sm sm:text-base truncate opacity-80"></h2>
     </div>
     <!-- Marcador de página manual -->
@@ -284,6 +284,16 @@
 <div id="loading-overlay" class="hidden fixed inset-0 z-50 bg-[var(--ink)] flex flex-col items-center justify-center gap-3">
   <svg class="animate-spin" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#6FA089" stroke-width="2"><circle cx="12" cy="12" r="9" stroke-opacity="0.25"/><path d="M21 12a9 9 0 00-9-9"/></svg>
   <p id="loading-label" class="text-sm text-white/70">Abrindo livro…</p>
+</div>
+
+<!-- Modal para visualização da capa em tamanho cheio -->
+<div id="modal-cover-full" class="hidden fixed inset-0 z-50 modal-backdrop flex items-center justify-center p-4">
+  <div class="relative max-w-full max-h-full">
+    <img id="img-cover-full" src="" alt="Capa do Livro" class="max-w-[90vw] max-h-[85vh] rounded-lg shadow-2xl border border-white/10 object-contain" />
+    <button id="btn-close-cover" class="absolute -top-3 -right-3 focus-ring p-1.5 rounded-full bg-black/60 hover:bg-black/80 text-white" aria-label="Fechar capa">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+    </button>
+  </div>
 </div>
 
 <script src="app.js"></script>

@@ -173,7 +173,7 @@ async function importFile(file) {
     title,
     author,
     cover: coverDataUrl,
-    fileData: arrayBuffer, // IndexedDB aceita ArrayBuffer nativamente
+    fileData: file, // Salva o File (Blob) diretamente no IndexedDB
     fileName: file.name,
     addedAt: Date.now(),
     // Progresso de leitura (preenchido pelo reader.js)

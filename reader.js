@@ -19,6 +19,9 @@ const btnCloseA11y = document.getElementById("btn-close-a11y");
 const readerCoverThumb = document.getElementById("reader-cover-thumb");
 const btnBookmark = document.getElementById("btn-bookmark");
 const iconBookmark = document.getElementById("icon-bookmark");
+const modalCoverFull = document.getElementById("modal-cover-full");
+const imgCoverFull = document.getElementById("img-cover-full");
+const btnCloseCover = document.getElementById("btn-close-cover");
 
 const progressLabel = document.getElementById("progress-label");
 const progressPercent = document.getElementById("progress-percent");
@@ -109,9 +112,18 @@ btnBack.addEventListener("click", closeReader);
 
 async function loadEpub(book) {
   readerFrame.innerHTML = "";
+
+  // Converte Blob/File para ArrayBuffer de forma assíncrona para compatibilidade universal
+  let arrayBuffer;
+  if (book.fileData instanceof Blob) {
+    arrayBuffer = await book.fileData.arrayBuffer();
+  } else {
+    arrayBuffer = book.fileData;
+  }
+
   // Inicializa o epub.js e abre o ArrayBuffer diretamente (método mais estável)
   epubBook = ePub();
-  await epubBook.open(book.fileData);
+  await epubBook.open(arrayBuffer, "binary");
 
   const flow = book.prefs.flow === "scrolled" ? "scrolled" : "paginated";
   const manager = book.prefs.flow === "scrolled" ? "continuous" : "default";
@@ -184,9 +196,24 @@ async function loadEpub(book) {
       console.warn("Erro ao preparar texto para TTS:", err);
     }
 
-    // Escuta cliques dentro do documento do iframe para navegação de página
+    // Escuta cliques dentro do documento do iframe para navegação de página ou seleção de palavra
     if (view && view.document) {
       view.document.addEventListener("click", (e) => {
+        // Se clicou em uma palavra do TTS, move o ponto de leitura
+        const wordEl = e.target.closest(".tts-word");
+        if (wordEl) {
+          const idx = ttsWords.findIndex(w => w.el === wordEl);
+          if (idx !== -1) {
+            ttsCurrentIndex = idx;
+            if (ttsSpeaking) {
+              speakFrom(ttsCurrentIndex);
+            } else {
+              highlightWord(ttsCurrentIndex);
+            }
+            return; // Interrompe para não disparar navegação lateral
+          }
+        }
+
         const x = e.clientX / view.document.documentElement.clientWidth;
         if (x < 0.25) {
           stopSpeaking();
@@ -201,6 +228,21 @@ async function loadEpub(book) {
 
   // Navegação fallback no container principal (caso o clique caia fora do iframe)
   readerFrame.addEventListener("click", (e) => {
+    // Se clicou em uma palavra do TTS, move o ponto de leitura
+    const wordEl = e.target.closest(".tts-word");
+    if (wordEl) {
+      const idx = ttsWords.findIndex(w => w.el === wordEl);
+      if (idx !== -1) {
+        ttsCurrentIndex = idx;
+        if (ttsSpeaking) {
+          speakFrom(ttsCurrentIndex);
+        } else {
+          highlightWord(ttsCurrentIndex);
+        }
+        return; // Interrompe para não disparar navegação lateral
+      }
+    }
+
     const x = e.clientX / window.innerWidth;
     if (x < 0.25) {
       stopSpeaking();
@@ -223,6 +265,23 @@ function setEpubFontFamily(fontKey) {
   epubRendition.themes.font(family);
 }
 
+function getEpubCurrentCfi() {
+  if (epubRendition && ttsWords.length && ttsWords[ttsCurrentIndex]?.el) {
+    const wordEl = ttsWords[ttsCurrentIndex].el;
+    try {
+      const contents = epubRendition.getContents();
+      if (contents && contents[0]) {
+        const cfiObj = contents[0].cfiFromNode(wordEl);
+        if (cfiObj) return cfiObj.toString();
+      }
+    } catch (err) {
+      console.warn("Erro ao obter CFI da palavra em destaque:", err);
+    }
+  }
+  const loc = epubRendition?.currentLocation();
+  return loc?.start?.cfi || null;
+}
+
 function updateEpubProgress(location) {
   const loc = location || epubRendition.currentLocation();
   if (!loc || !loc.start) return;
@@ -235,8 +294,10 @@ function updateEpubProgress(location) {
   progressBar.style.width = `${percent}%`;
 
   if (currentBook) {
+    // Tenta salvar o localizador da palavra em reprodução para um salvamento preciso
+    const exactCfi = getEpubCurrentCfi();
     currentBook.progress = {
-      location: loc.start.cfi,
+      location: exactCfi || loc.start.cfi,
       percent,
       page: loc.start.location || 0,
       totalPages: epubBook.locations.length() || 0,
@@ -258,7 +319,15 @@ async function loadPdf(book) {
   pdfjsLib.GlobalWorkerOptions.workerSrc =
     "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
 
-  pdfDoc = await pdfjsLib.getDocument({ data: book.fileData.slice(0) }).promise;
+  // Converte Blob/File para ArrayBuffer de forma assíncrona para compatibilidade universal
+  let arrayBuffer;
+  if (book.fileData instanceof Blob) {
+    arrayBuffer = await book.fileData.arrayBuffer();
+  } else {
+    arrayBuffer = book.fileData;
+  }
+
+  pdfDoc = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
   pdfTotalPages = pdfDoc.numPages;
   pdfCurrentPage = book.progress.page || 1;
 
@@ -269,6 +338,21 @@ async function loadPdf(book) {
   `;
 
   readerFrame.addEventListener("click", (e) => {
+    // Se clicou em uma palavra do TTS, move o ponto de leitura
+    const wordEl = e.target.closest(".tts-word");
+    if (wordEl) {
+      const idx = ttsWords.findIndex(w => w.el === wordEl);
+      if (idx !== -1) {
+        ttsCurrentIndex = idx;
+        if (ttsSpeaking) {
+          speakFrom(ttsCurrentIndex);
+        } else {
+          highlightWord(ttsCurrentIndex);
+        }
+        return; // Interrompe para não disparar navegação lateral
+      }
+    }
+
     const x = e.clientX / window.innerWidth;
     if (x < 0.15) goToPdfPage(pdfCurrentPage - 1);
     else if (x > 0.85) goToPdfPage(pdfCurrentPage + 1);
@@ -456,6 +540,12 @@ function highlightWord(index) {
     // Mantém a palavra sempre centralizada, tanto no leitor de PDF/EPUB
     // (documento normal) quanto dentro do iframe do epub.js.
     el.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
+  }
+
+  // Se for EPUB, atualiza o progresso com a palavra exata em tempo real
+  if (currentType === "epub") {
+    updateEpubProgress();
+    scheduleSave();
   }
 }
 
@@ -765,3 +855,27 @@ document.getElementById("font-dec").addEventListener("click", () => {
   applyFontSize(currentBook.prefs.fontSize);
   patchBook(currentBook.id, { prefs: currentBook.prefs });
 });
+
+// Controle de visualização da capa em tamanho cheio (Modal)
+if (readerCoverThumb) {
+  readerCoverThumb.addEventListener("click", () => {
+    if (currentBook && currentBook.cover && modalCoverFull && imgCoverFull) {
+      imgCoverFull.src = currentBook.cover;
+      modalCoverFull.classList.remove("hidden");
+    }
+  });
+}
+
+function closeCoverModal() {
+  if (modalCoverFull) modalCoverFull.classList.add("hidden");
+  if (imgCoverFull) imgCoverFull.src = "";
+}
+
+if (modalCoverFull) {
+  modalCoverFull.addEventListener("click", (e) => {
+    if (e.target === modalCoverFull) closeCoverModal();
+  });
+}
+if (btnCloseCover) {
+  btnCloseCover.addEventListener("click", closeCoverModal);
+}
