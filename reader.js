@@ -42,6 +42,7 @@ let epubRendition = null;    // instância do Rendition (epub.js)
 let pdfDoc = null;           // instância do PDFDocumentProxy (pdf.js)
 let pdfCurrentPage = 1;
 let pdfTotalPages = 0;
+let pdfRenderTask = null;
 
 let saveTimer = null;        // debounce do autosave
 
@@ -90,6 +91,12 @@ function closeReader() {
   stopSpeaking();
   if (epubRendition) { epubRendition.destroy(); epubRendition = null; }
   epubBook = null;
+  if (pdfRenderTask) {
+    try {
+      pdfRenderTask.cancel();
+    } catch (_) {}
+    pdfRenderTask = null;
+  }
   pdfDoc = null;
   readerFrame.innerHTML = "";
 
@@ -332,8 +339,11 @@ async function loadPdf(book) {
   pdfCurrentPage = book.progress.page || 1;
 
   readerFrame.innerHTML = `
-    <div id="pdf-page" class="h-full overflow-y-auto px-6 py-8 sm:px-16">
-      <div id="pdf-text" class="max-w-2xl mx-auto leading-relaxed"></div>
+    <div id="pdf-page" class="h-full overflow-y-auto flex flex-col items-center gap-6 px-6 py-8">
+      <div id="pdf-canvas-container" class="relative max-w-full shadow-lg border border-white/10 rounded bg-white">
+        <canvas id="pdf-canvas" class="max-w-full h-auto block rounded"></canvas>
+      </div>
+      <div id="pdf-text" class="max-w-2xl w-full leading-relaxed bg-[var(--ink-soft)]/20 p-5 rounded-lg border border-white/5"></div>
     </div>
   `;
 
@@ -366,10 +376,40 @@ async function renderPdfPage(pageNum) {
   pdfCurrentPage = pageNum;
 
   const page = await pdfDoc.getPage(pageNum);
-  const textContent = await page.getTextContent();
 
-  // Agrupa os itens de texto em "linhas" (heurística simples: mesma
-  // coordenada Y aproximada) para formar parágrafos legíveis.
+  // 1. Renderiza a página visual no canvas
+  const viewport = page.getViewport({ scale: 1.5 });
+  const canvas = document.getElementById("pdf-canvas");
+  if (canvas) {
+    const context = canvas.getContext("2d");
+    canvas.height = viewport.height;
+    canvas.width = viewport.width;
+
+    // Cancela tarefa anterior em andamento para evitar conflitos de renderização
+    if (pdfRenderTask) {
+      try {
+        pdfRenderTask.cancel();
+      } catch (_) {}
+      pdfRenderTask = null;
+    }
+
+    const renderContext = {
+      canvasContext: context,
+      viewport: viewport
+    };
+    pdfRenderTask = page.render(renderContext);
+    try {
+      await pdfRenderTask.promise;
+    } catch (err) {
+      if (err.name !== "RenderingCancelledException" && err.message !== "Rendering cancelled, page.render() was called again.") {
+        console.warn("Erro ao renderizar canvas do PDF:", err);
+      }
+    }
+    pdfRenderTask = null;
+  }
+
+  // 2. Extrai e exibe o texto da página (se existir)
+  const textContent = await page.getTextContent();
   const lines = [];
   let currentLine = [];
   let lastY = null;
@@ -385,12 +425,23 @@ async function renderPdfPage(pageNum) {
   if (currentLine.length) lines.push(currentLine.join(" "));
 
   const container = document.getElementById("pdf-text");
-  container.innerHTML = lines
-    .filter((l) => l.trim().length)
-    .map((l) => `<p class="mb-4">${escapeHtml(l)}</p>`)
-    .join("");
+  if (container) {
+    const cleanLines = lines.filter((l) => l.trim().length);
+    if (cleanLines.length === 0) {
+      container.innerHTML = "";
+      container.classList.add("hidden");
+      // Reseta index do TTS para evitar falas residuais
+      ttsWords = [];
+      ttsCurrentIndex = 0;
+    } else {
+      container.classList.remove("hidden");
+      container.innerHTML = cleanLines
+        .map((l) => `<p class="mb-4">${escapeHtml(l)}</p>`)
+        .join("");
+      wrapWordsForTts(container);
+    }
+  }
 
-  wrapWordsForTts(container);
   document.getElementById("pdf-page").scrollTop = 0;
 
   updatePdfProgress();

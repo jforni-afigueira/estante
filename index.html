@@ -103,6 +103,14 @@
     outline-offset: 2px;
   }
 
+  /* Filtros inteligentes para ajustar as cores da página do PDF conforme o tema */
+  .theme-escuro #pdf-canvas {
+    filter: invert(0.9) hue-rotate(180deg) brightness(0.9) contrast(1.1);
+  }
+  .theme-sepia #pdf-canvas {
+    filter: sepia(0.4) brightness(0.95) contrast(1.05);
+  }
+
   @media (prefers-reduced-motion: reduce){
     *{ animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
   }
