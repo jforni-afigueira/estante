@@ -185,26 +185,61 @@ async function importFile(file) {
   await saveBook(book);
 }
 
-/** Extrai título, autor e capa (se existir) de um EPUB usando epub.js. */
+/** Extrai título, autor e capa (se existir) de um EPUB usando JSZip. */
 async function extractEpubMetadata(arrayBuffer) {
   try {
-    const book = ePub();
-    await book.open(arrayBuffer);
-    await book.ready;
-    const metadata = await book.loaded.metadata;
+    const zip = await JSZip.loadAsync(arrayBuffer);
+
+    // 1. Acha o container.xml para saber o caminho do .opf
+    const containerXmlText = await zip.file("META-INF/container.xml").async("text");
+    const containerDoc = new DOMParser().parseFromString(containerXmlText, "text/xml");
+    const rootfilePath = containerDoc.querySelector("rootfile").getAttribute("full-path");
+
+    const rootDir = rootfilePath.includes("/") ? rootfilePath.substring(0, rootfilePath.lastIndexOf("/") + 1) : "";
+
+    // 2. Lê e analisa o arquivo .opf
+    const opfText = await zip.file(rootfilePath).async("text");
+    const opfDoc = new DOMParser().parseFromString(opfText, "text/xml");
+
+    const title = opfDoc.querySelector("title")?.textContent || opfDoc.querySelector("dc\\:title")?.textContent || "";
+    const author = opfDoc.querySelector("creator")?.textContent || opfDoc.querySelector("dc\\:creator")?.textContent || "";
+
+    // Mapeia o manifesto para buscar a capa
+    const manifestItems = {};
+    opfDoc.querySelectorAll("manifest > item").forEach(item => {
+      const id = item.getAttribute("id");
+      const href = item.getAttribute("href");
+      manifestItems[id] = { href, absPath: rootDir + href, mediaType: item.getAttribute("media-type") };
+    });
+
+    // Tenta encontrar a capa do livro
+    let coverId = null;
+    const coverMeta = opfDoc.querySelector("meta[name='cover']");
+    if (coverMeta) {
+      coverId = coverMeta.getAttribute("content");
+    } else {
+      const coverItem = Array.from(opfDoc.querySelectorAll("manifest > item")).find(item => {
+        const prop = item.getAttribute("properties");
+        return (prop && prop.includes("cover-image")) || item.getAttribute("id")?.toLowerCase().includes("cover");
+      });
+      if (coverItem) coverId = coverItem.getAttribute("id");
+    }
 
     let cover = null;
-    try {
-      const coverUrl = await book.coverUrl();
-      if (coverUrl) cover = await urlToDataURL(coverUrl);
-    } catch (_) {
-      /* nem todo EPUB tem capa — segue sem ela */
+    if (coverId && manifestItems[coverId]) {
+      const coverPath = manifestItems[coverId].absPath;
+      const coverFile = zip.file(coverPath);
+      if (coverFile) {
+        const base64 = await coverFile.async("base64");
+        const mime = manifestItems[coverId].mediaType || "image/jpeg";
+        cover = `data:${mime};base64,${base64}`;
+      }
     }
 
     return {
-      title: metadata.title,
-      author: metadata.creator,
-      cover,
+      title,
+      author,
+      cover
     };
   } catch (err) {
     console.warn("Não foi possível ler metadados do EPUB:", err);

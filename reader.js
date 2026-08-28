@@ -22,6 +22,7 @@ const iconBookmark = document.getElementById("icon-bookmark");
 const modalCoverFull = document.getElementById("modal-cover-full");
 const imgCoverFull = document.getElementById("img-cover-full");
 const btnCloseCover = document.getElementById("btn-close-cover");
+const readerToc = document.getElementById("reader-toc");
 
 const progressLabel = document.getElementById("progress-label");
 const progressPercent = document.getElementById("progress-percent");
@@ -37,8 +38,14 @@ const ttsSpeedVal = document.getElementById("tts-speed-val");
 /* ---- Estado do livro atualmente aberto ---- */
 let currentBook = null;      // registro do IndexedDB
 let currentType = null;      // "epub" | "pdf"
-let epubBook = null;         // instância do Book (epub.js)
-let epubRendition = null;    // instância do Rendition (epub.js)
+let epubBook = null;         // Legado
+let epubRendition = null;    // Legado
+let epubZip = null;          // Instância do JSZip
+let epubManifestItems = {};  // Arquivos mapeados no zip
+let epubSpineIds = [];       // IDs na ordem de leitura (Spine)
+let epubChapterTitles = [];  // Nomes de cada capítulo do spine
+let currentSpineIndex = 0;   // Índice do capítulo ativo
+let createdBlobUrls = [];    // URLs criadas para liberar memória
 let pdfDoc = null;           // instância do PDFDocumentProxy (pdf.js)
 let pdfCurrentPage = 1;
 let pdfTotalPages = 0;
@@ -58,6 +65,11 @@ async function openReader(bookId) {
   currentBook = book;
   currentType = book.type;
   readerTitle.textContent = book.title;
+
+  if (book.type === "pdf") {
+    if (readerTitle) readerTitle.classList.remove("hidden");
+    if (readerToc) readerToc.classList.add("hidden");
+  }
 
   // Exibe a miniatura da capa do livro se existir
   if (book.cover && readerCoverThumb) {
@@ -91,6 +103,19 @@ function closeReader() {
   stopSpeaking();
   if (epubRendition) { epubRendition.destroy(); epubRendition = null; }
   epubBook = null;
+
+  // Limpeza das URLs de blobs e do estado do custom EPUB
+  revokeBlobUrls();
+  epubZip = null;
+  epubManifestItems = {};
+  epubSpineIds = [];
+  epubChapterTitles = [];
+  currentSpineIndex = 0;
+  if (readerToc) {
+    readerToc.classList.add("hidden");
+    readerToc.innerHTML = "";
+  }
+
   if (pdfRenderTask) {
     try {
       pdfRenderTask.cancel();
@@ -117,10 +142,49 @@ btnBack.addEventListener("click", closeReader);
    EPUB — renderização com epub.js
    ===================================================================== */
 
+// URLs criadas para recursos locais do EPUB (devem ser revogadas para evitar vazamento de memória)
+function revokeBlobUrls() {
+  createdBlobUrls.forEach(url => URL.revokeObjectURL(url));
+  createdBlobUrls = [];
+}
+
+function resolveRelativePath(baseDir, relativePath) {
+  const parts = (baseDir + relativePath).split("/");
+  const stack = [];
+  for (const part of parts) {
+    if (part === "." || part === "") continue;
+    if (part === "..") {
+      stack.pop();
+    } else {
+      stack.push(part);
+    }
+  }
+  return stack.join("/");
+}
+
+function getMimeType(path) {
+  const ext = path.split(".").pop().toLowerCase();
+  const mimes = {
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    png: "image/png",
+    gif: "image/gif",
+    svg: "image/svg+xml",
+    webp: "image/webp"
+  };
+  return mimes[ext] || "image/jpeg";
+}
+
+function escapeHtml(str) {
+  const div = document.createElement("div");
+  div.textContent = str || "";
+  return div.innerHTML;
+}
+
 async function loadEpub(book) {
   readerFrame.innerHTML = "";
+  revokeBlobUrls();
 
-  // Converte Blob/File para ArrayBuffer de forma assíncrona para compatibilidade universal
   let arrayBuffer;
   if (book.fileData instanceof Blob) {
     arrayBuffer = await book.fileData.arrayBuffer();
@@ -128,114 +192,165 @@ async function loadEpub(book) {
     arrayBuffer = book.fileData;
   }
 
-  // Inicializa o epub.js e abre o ArrayBuffer diretamente (método mais estável)
-  epubBook = ePub();
-  await epubBook.open(arrayBuffer, "binary");
+  // Carrega o ZIP na memória
+  epubZip = await JSZip.loadAsync(arrayBuffer);
 
-  const flow = book.prefs.flow === "scrolled" ? "scrolled" : "paginated";
-  const manager = book.prefs.flow === "scrolled" ? "continuous" : "default";
+  // 1. Encontra o container.xml
+  const containerXmlText = await epubZip.file("META-INF/container.xml").async("text");
+  const containerDoc = new DOMParser().parseFromString(containerXmlText, "text/xml");
+  const rootfilePath = containerDoc.querySelector("rootfile").getAttribute("full-path");
+  const rootDir = rootfilePath.includes("/") ? rootfilePath.substring(0, rootfilePath.lastIndexOf("/") + 1) : "";
 
-  epubRendition = epubBook.renderTo(readerFrame, {
-    width: "100%",
-    height: "100%",
-    flow: flow,
-    manager: manager,
-    spread: "none",
+  // 2. Lê e processa o arquivo .opf (Manifesto)
+  const opfText = await epubZip.file(rootfilePath).async("text");
+  const opfDoc = new DOMParser().parseFromString(opfText, "text/xml");
+
+  // Mapeia todos os arquivos do manifesto
+  epubManifestItems = {};
+  opfDoc.querySelectorAll("manifest > item").forEach(item => {
+    const id = item.getAttribute("id");
+    const href = item.getAttribute("href");
+    epubManifestItems[id] = { href, absPath: rootDir + href, mediaType: item.getAttribute("media-type") };
   });
 
-  // Injeta estilos básicos, margens e fontes do leitor no iframe do EPUB.
-  // Também força o texto a herdar cores e ter fundos transparentes para respeitar os temas Claro/Sépia/Escuro.
-  epubRendition.themes.default({
-    "body": {
-      "padding": "0 24px !important"
-    },
-    "p, span, div, li, h1, h2, h3, h4, h5, h6": {
-      "background-color": "transparent !important",
-      "color": "inherit !important"
-    },
-    "@import": "url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Literata:ital,wght@0,400;0,600;1,400&display=swap')",
-    ".tts-highlight": {
-      "background-color": "#FFE58A !important",
-      "color": "#241C08 !important",
-      "border-radius": "3px",
-      "padding": "0 1px",
-      "box-shadow": "0 0 0 2px #FFE58A"
+  // Mapeia a ordem de leitura (Spine)
+  epubSpineIds = [];
+  opfDoc.querySelectorAll("spine > itemref").forEach(itemref => {
+    epubSpineIds.push(itemref.getAttribute("idref"));
+  });
+
+  // 3. Extrai ou gera os títulos dos capítulos para o TOC
+  epubChapterTitles = [];
+  for (let i = 0; i < epubSpineIds.length; i++) {
+    const id = epubSpineIds[i];
+    const item = epubManifestItems[id];
+    if (item && epubZip.file(item.absPath)) {
+      try {
+        const text = await epubZip.file(item.absPath).async("text");
+        const doc = new DOMParser().parseFromString(text, "text/html");
+        const titleText = doc.querySelector("h1, h2, h3, title")?.textContent?.trim();
+        epubChapterTitles.push(titleText || `Capítulo ${i + 1}`);
+      } catch (_) {
+        epubChapterTitles.push(`Capítulo ${i + 1}`);
+      }
+    } else {
+      epubChapterTitles.push(`Capítulo ${i + 1}`);
     }
-  });
-
-  registerEpubThemes();
-  epubRendition.themes.select(book.prefs.theme);
-  epubRendition.themes.fontSize(book.prefs.fontSize + "px");
-  setEpubFontFamily(book.prefs.font);
-
-  // Restaura a posição salva com segurança, evitando falhas de display(undefined)
-  if (book.progress && book.progress.location) {
-    await epubRendition.display(book.progress.location);
-  } else {
-    await epubRendition.display();
   }
 
-  // Gera o índice de localizações em segundo plano (necessário para % de progresso).
-  // Comentário: em livros grandes isso pode levar alguns segundos — por isso não
-  // bloqueamos a exibição do livro esperando essa promessa.
-  epubBook.locations.generate(1000).then(() => {
-    updateEpubProgress();
-  });
+  // 4. Configura o menu suspenso (TOC select) no cabeçalho
+  if (readerToc) {
+    readerToc.innerHTML = epubChapterTitles
+      .map((t, idx) => `<option value="${idx}">${escapeHtml(t)}</option>`)
+      .join("");
 
-  epubRendition.on("relocated", (location) => {
-    updateEpubProgress(location);
-    scheduleSave();
-  });
+    // Mostra o seletor TOC e esconde o título estático para EPUB
+    readerToc.classList.remove("hidden");
+    readerTitle.classList.add("hidden");
 
-  // Sempre que uma nova seção é desenhada na tela, preparamos o texto
-  // dela para poder ser narrado (envolvendo cada palavra em um <span>).
-  epubRendition.on("rendered", (section, view) => {
-    try {
-      const contents = epubRendition.getContents();
-      if (contents) {
-        contents.forEach((c) => {
-          if (c && c.document && c.document.body) {
-            wrapWordsForTts(c.document.body);
-          }
-        });
+    // Remove event listener antigo e recria
+    const newSelect = readerToc.cloneNode(true);
+    readerToc.parentNode.replaceChild(newSelect, readerToc);
+
+    // Atualiza a referência global
+    document.getElementById("reader-toc").addEventListener("change", (e) => {
+      stopSpeaking();
+      displayEpubChapter(parseInt(e.target.value));
+    });
+  }
+
+  // 5. Restaura o progresso de leitura
+  let targetChapter = 0;
+  let targetWord = 0;
+
+  if (book.progress && book.progress.location) {
+    // Tenta decodificar o formato "chapterIndex:wordIndex"
+    if (book.progress.location.includes(":")) {
+      const parts = book.progress.location.split(":");
+      targetChapter = parseInt(parts[0]) || 0;
+      targetWord = parseInt(parts[1]) || 0;
+    }
+  }
+
+  // 6. Exibe o capítulo inicial
+  await displayEpubChapter(targetChapter, targetWord);
+}
+
+async function displayEpubChapter(chapterIndex, targetWordIndex = 0) {
+  if (!epubSpineIds.length) return;
+  chapterIndex = Math.min(Math.max(0, chapterIndex), epubSpineIds.length - 1);
+  currentSpineIndex = chapterIndex;
+
+  // Atualiza o select do TOC no cabeçalho
+  const selectEl = document.getElementById("reader-toc");
+  if (selectEl) {
+    selectEl.value = chapterIndex;
+  }
+
+  // Revoga URLs anteriores para evitar sobrecarga de memória
+  revokeBlobUrls();
+
+  const id = epubSpineIds[chapterIndex];
+  const item = epubManifestItems[id];
+  if (!item || !epubZip.file(item.absPath)) {
+    readerFrame.innerHTML = `<p class="text-center opacity-50 py-12">Erro ao carregar o capítulo.</p>`;
+    return;
+  }
+
+  showLoading("Carregando capítulo…");
+
+  let htmlText = await epubZip.file(item.absPath).async("text");
+  const doc = new DOMParser().parseFromString(htmlText, "text/html");
+  const chapterDir = item.absPath.includes("/") ? item.absPath.substring(0, item.absPath.lastIndexOf("/") + 1) : "";
+
+  // Resolve imagens inline (img) para Blob URLs
+  const imgs = doc.querySelectorAll("img");
+  for (const img of imgs) {
+    const src = img.getAttribute("src");
+    if (src && !src.startsWith("data:") && !src.startsWith("http")) {
+      const relPath = resolveRelativePath(chapterDir, src);
+      const imgFile = epubZip.file(relPath);
+      if (imgFile) {
+        const blob = await imgFile.async("blob");
+        const blobUrl = URL.createObjectURL(blob);
+        img.setAttribute("src", blobUrl);
+        createdBlobUrls.push(blobUrl);
       }
-    } catch (err) {
-      console.warn("Erro ao preparar texto para TTS:", err);
     }
+  }
 
-    // Escuta cliques dentro do documento do iframe para navegação de página ou seleção de palavra
-    if (view && view.document) {
-      view.document.addEventListener("click", (e) => {
-        // Se clicou em uma palavra do TTS, move o ponto de leitura
-        const wordEl = e.target.closest(".tts-word");
-        if (wordEl) {
-          const idx = ttsWords.findIndex(w => w.el === wordEl);
-          if (idx !== -1) {
-            ttsCurrentIndex = idx;
-            if (ttsSpeaking) {
-              speakFrom(ttsCurrentIndex);
-            } else {
-              highlightWord(ttsCurrentIndex);
-            }
-            return; // Interrompe para não disparar navegação lateral
-          }
-        }
-
-        const x = e.clientX / view.document.documentElement.clientWidth;
-        if (x < 0.25) {
-          stopSpeaking();
-          epubRendition.prev();
-        } else if (x > 0.75) {
-          stopSpeaking();
-          epubRendition.next();
-        }
-      });
+  // Resolve imagens em SVG (image) para Blob URLs
+  const svgImgs = doc.querySelectorAll("image");
+  for (const img of svgImgs) {
+    const href = img.getAttribute("href") || img.getAttribute("xlink:href");
+    if (href && !href.startsWith("data:") && !href.startsWith("http")) {
+      const relPath = resolveRelativePath(chapterDir, href);
+      const imgFile = epubZip.file(relPath);
+      if (imgFile) {
+        const blob = await imgFile.async("blob");
+        const blobUrl = URL.createObjectURL(blob);
+        img.setAttribute("href", blobUrl);
+        img.setAttribute("xlink:href", blobUrl);
+        createdBlobUrls.push(blobUrl);
+      }
     }
-  });
+  }
 
-  // Navegação fallback no container principal (caso o clique caia fora do iframe)
-  readerFrame.addEventListener("click", (e) => {
-    // Se clicou em uma palavra do TTS, move o ponto de leitura
+  // Limpa e renderiza o HTML diretamente no leitor (sem usar iframe)
+  readerFrame.innerHTML = `
+    <div id="epub-page" class="h-full overflow-y-auto px-6 py-8 sm:px-12">
+      <div id="epub-text" class="max-w-2xl mx-auto leading-relaxed epub-body-content"></div>
+    </div>
+  `;
+
+  const textContainer = document.getElementById("epub-text");
+  textContainer.innerHTML = doc.body.innerHTML;
+
+  // Prepara as palavras do texto para narração/destaque
+  wrapWordsForTts(textContainer);
+
+  // Escuta cliques no container para selecionar palavra e pular o TTS
+  document.getElementById("epub-page").addEventListener("click", (e) => {
     const wordEl = e.target.closest(".tts-word");
     if (wordEl) {
       const idx = ttsWords.findIndex(w => w.el === wordEl);
@@ -246,68 +361,55 @@ async function loadEpub(book) {
         } else {
           highlightWord(ttsCurrentIndex);
         }
-        return; // Interrompe para não disparar navegação lateral
+        return; // impede passagem lateral
       }
     }
 
+    // Clique nas laterais para avançar/retroceder capítulos
     const x = e.clientX / window.innerWidth;
-    if (x < 0.25) {
+    if (x < 0.15) {
       stopSpeaking();
-      epubRendition.prev();
-    } else if (x > 0.75) {
+      displayEpubChapter(currentSpineIndex - 1);
+    } else if (x > 0.85) {
       stopSpeaking();
-      epubRendition.next();
+      displayEpubChapter(currentSpineIndex + 1);
     }
   });
-}
 
-function registerEpubThemes() {
-  epubRendition.themes.register("claro", { body: { background: "#F4EEDF", color: "#2A2118" } });
-  epubRendition.themes.register("sepia", { body: { background: "#EAD9B4", color: "#2A2118" } });
-  epubRendition.themes.register("escuro", { body: { background: "#15191E", color: "#DCD5C4" } });
-}
+  // Se houver palavra-alvo para restaurar progresso, aplica o realce
+  if (targetWordIndex > 0 && targetWordIndex < ttsWords.length) {
+    ttsCurrentIndex = targetWordIndex;
+    highlightWord(targetWordIndex);
+  } else {
+    document.getElementById("epub-page").scrollTop = 0;
+    ttsCurrentIndex = 0;
+  }
 
-function setEpubFontFamily(fontKey) {
-  const family = fontKey === "serif" ? "'Literata', Georgia, serif" : "'Inter', sans-serif";
-  epubRendition.themes.font(family);
+  hideLoading();
+  updateEpubProgress();
 }
 
 function getEpubCurrentCfi() {
-  if (epubRendition && ttsWords.length && ttsWords[ttsCurrentIndex]?.el) {
-    const wordEl = ttsWords[ttsCurrentIndex].el;
-    try {
-      const contents = epubRendition.getContents();
-      if (contents && contents[0]) {
-        const cfiObj = contents[0].cfiFromNode(wordEl);
-        if (cfiObj) return cfiObj.toString();
-      }
-    } catch (err) {
-      console.warn("Erro ao obter CFI da palavra em destaque:", err);
-    }
+  if (epubSpineIds.length) {
+    return `${currentSpineIndex}:${ttsCurrentIndex}`;
   }
-  const loc = epubRendition?.currentLocation();
-  return loc?.start?.cfi || null;
+  return null;
 }
 
-function updateEpubProgress(location) {
-  const loc = location || epubRendition.currentLocation();
-  if (!loc || !loc.start) return;
-  let percent = 0;
-  if (epubBook.locations.length()) {
-    percent = Math.round(epubBook.locations.percentageFromCfi(loc.start.cfi) * 100);
-  }
-  progressLabel.textContent = `Local ${loc.start.location || "—"}`;
+function updateEpubProgress() {
+  if (!epubSpineIds.length) return;
+  const percent = Math.round((currentSpineIndex / epubSpineIds.length) * 100);
+
+  progressLabel.textContent = `Capítulo ${currentSpineIndex + 1} de ${epubSpineIds.length}`;
   progressPercent.textContent = `${percent}%`;
   progressBar.style.width = `${percent}%`;
 
   if (currentBook) {
-    // Tenta salvar o localizador da palavra em reprodução para um salvamento preciso
-    const exactCfi = getEpubCurrentCfi();
     currentBook.progress = {
-      location: exactCfi || loc.start.cfi,
+      location: getEpubCurrentCfi(),
       percent,
-      page: loc.start.location || 0,
-      totalPages: epubBook.locations.length() || 0,
+      page: currentSpineIndex + 1,
+      totalPages: epubSpineIds.length,
     };
   }
 }
@@ -649,10 +751,9 @@ async function speakFrom(startIndex) {
 
 async function advancePageAndContinueSpeaking() {
   if (currentType === "epub") {
-    const atEnd = epubRendition.location?.atEnd;
-    if (atEnd) { stopSpeaking(); return; }
-    await epubRendition.next();
-    // pequena espera para o 'rendered' reconstruir ttsWords da nova seção
+    if (currentSpineIndex >= epubSpineIds.length - 1) { stopSpeaking(); return; }
+    await displayEpubChapter(currentSpineIndex + 1);
+    // pequena espera para o DOM preparar e indexar ttsWords do novo capítulo
     setTimeout(() => { if (ttsSpeaking) speakFrom(0); }, 300);
   } else if (currentType === "pdf") {
     if (pdfCurrentPage >= pdfTotalPages) { stopSpeaking(); return; }
@@ -686,18 +787,18 @@ btnTtsToggle.addEventListener("click", () => {
 
 // Eventos do painel de controle do leitor
 document.getElementById("btn-prev-page").addEventListener("click", () => {
-  if (currentType === "epub" && epubRendition) {
+  if (currentType === "epub") {
     stopSpeaking();
-    epubRendition.prev();
+    displayEpubChapter(currentSpineIndex - 1);
   } else if (currentType === "pdf") {
     goToPdfPage(pdfCurrentPage - 1);
   }
 });
 
 document.getElementById("btn-next-page").addEventListener("click", () => {
-  if (currentType === "epub" && epubRendition) {
+  if (currentType === "epub") {
     stopSpeaking();
-    epubRendition.next();
+    displayEpubChapter(currentSpineIndex + 1);
   } else if (currentType === "pdf") {
     goToPdfPage(pdfCurrentPage + 1);
   }
@@ -786,11 +887,8 @@ if (btnBookmark) {
     if (!currentBook) return;
 
     // Salva o progresso atual imediatamente
-    if (currentType === "epub" && epubRendition) {
-      const loc = epubRendition.currentLocation();
-      if (loc && loc.start) {
-        updateEpubProgress(loc);
-      }
+    if (currentType === "epub") {
+      updateEpubProgress();
     } else if (currentType === "pdf") {
       updatePdfProgress();
     }
@@ -833,19 +931,16 @@ modalA11y.addEventListener("click", (e) => { if (e.target === modalA11y) modalA1
 function applyTheme(theme) {
   viewReader.classList.remove("theme-claro", "theme-sepia", "theme-escuro");
   viewReader.classList.add(`theme-${theme}`);
-  if (epubRendition) epubRendition.themes.select(theme);
 }
 
 function applyFont(fontKey) {
   viewReader.classList.remove("font-sans-reader", "font-serif-reader");
   viewReader.classList.add(fontKey === "serif" ? "font-serif-reader" : "font-sans-reader");
-  if (epubRendition) setEpubFontFamily(fontKey);
 }
 
 function applyFontSize(px) {
   viewReader.style.fontSize = `${px}px`;
   document.getElementById("font-size-val").textContent = `${px}px`;
-  if (epubRendition) epubRendition.themes.fontSize(`${px}px`);
 }
 
 function syncA11yButtons(prefs) {
@@ -886,11 +981,7 @@ document.querySelectorAll(".flow-opt").forEach((btn) => {
     currentBook.prefs.flow = btn.dataset.flow;
     syncA11yButtons(currentBook.prefs);
     patchBook(currentBook.id, { prefs: currentBook.prefs });
-    // Recarrega a exibição do epub.js no novo modo de fluxo
-    const cfi = epubRendition.currentLocation()?.start?.cfi;
-    epubRendition.destroy();
-    await loadEpub(currentBook);
-    if (cfi) epubRendition.display(cfi);
+    // O layout do leitor nativo flui automaticamente em rolagem contínua
   });
 });
 
