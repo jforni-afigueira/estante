@@ -1,24 +1,24 @@
 /* =====================================================================
-   app.js — Estante (galeria) + armazenamento local (IndexedDB)
+   app.js — Estante (galeria) + armazenamento local otimizado (IndexedDB)
    ---------------------------------------------------------------------
-   Este arquivo cuida de tudo que acontece ANTES de abrir um livro:
-   - Criação/abertura do banco IndexedDB (arquivos, progresso, metadados)
-   - Importação de arquivos .epub / .pdf
-   - Extração de metadados e capa (quando existir)
-   - Renderização da grade de capas na tela inicial ("Estante")
-
-   A renderização do conteúdo do livro (epub.js / pdf.js) e o motor de
-   voz (TTS) ficam em reader.js — este arquivo só entrega o "livro"
-   (registro do IndexedDB) para o reader.js quando o usuário clica nele.
+   - Separa metadados (books) dos arquivos binários (book_files) no
+     IndexedDB v2 para a galeria abrir instantaneamente sem carregar
+     dezenas/centenas de MB de PDFs/EPUBs na memória RAM.
+   - Mantém compatibilidade total com livros salvos na v1 (migração
+     automática e transparente ao abrir um livro legado).
+   - Suporta busca na estante, Drag & Drop de arquivos e notificações
+     via toast global.
    ===================================================================== */
 
 const DB_NAME = "estante-db";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const STORE_BOOKS = "books";
+const STORE_FILES = "book_files";
 
 let dbInstance = null;
+let allLibraryBooks = [];
 
-/** Abre (ou cria, na primeira vez) o banco IndexedDB do navegador. */
+/** Abre (ou cria/migra) o banco IndexedDB do navegador. */
 function openDatabase() {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
@@ -26,9 +26,11 @@ function openDatabase() {
     request.onupgradeneeded = (event) => {
       const db = event.target.result;
       if (!db.objectStoreNames.contains(STORE_BOOKS)) {
-        // keyPath "id" = identificador único de cada livro importado
         const store = db.createObjectStore(STORE_BOOKS, { keyPath: "id" });
         store.createIndex("title", "title", { unique: false });
+      }
+      if (!db.objectStoreNames.contains(STORE_FILES)) {
+        db.createObjectStore(STORE_FILES, { keyPath: "id" });
       }
     };
 
@@ -42,18 +44,22 @@ async function getDB() {
   return dbInstance;
 }
 
-/** Salva (ou atualiza) o registro completo de um livro. */
+/** Salva metadados em STORE_BOOKS e o Blob binário em STORE_FILES. */
 async function saveBook(book) {
   const db = await getDB();
+  const { fileData, ...meta } = book;
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_BOOKS, "readwrite");
-    tx.objectStore(STORE_BOOKS).put(book);
+    const tx = db.transaction([STORE_BOOKS, STORE_FILES], "readwrite");
+    tx.objectStore(STORE_BOOKS).put(meta);
+    if (fileData !== undefined) {
+      tx.objectStore(STORE_FILES).put({ id: meta.id, fileData });
+    }
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
 }
 
-/** Atualiza só alguns campos de um livro (ex.: progresso de leitura). */
+/** Atualiza apenas campos leves de metadados (progresso, preferências). */
 async function patchBook(id, patch) {
   const db = await getDB();
   return new Promise((resolve, reject) => {
@@ -70,16 +76,44 @@ async function patchBook(id, patch) {
   });
 }
 
+/**
+ * Carrega um livro completo (metadados + fileData binário).
+ * Se o registro vier da v1 (com fileData ainda embutido em STORE_BOOKS),
+ * migra silenciosamente o binário para STORE_FILES.
+ */
 async function getBook(id) {
   const db = await getDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_BOOKS, "readonly");
-    const req = tx.objectStore(STORE_BOOKS).get(id);
-    req.onsuccess = () => resolve(req.result || null);
-    req.onerror = () => reject(req.error);
+  const result = await new Promise((resolve, reject) => {
+    const tx = db.transaction([STORE_BOOKS, STORE_FILES], "readonly");
+    const metaReq = tx.objectStore(STORE_BOOKS).get(id);
+    const fileReq = tx.objectStore(STORE_FILES).get(id);
+    let meta = null;
+    let fileEntry = null;
+
+    metaReq.onsuccess = () => { meta = metaReq.result || null; };
+    fileReq.onsuccess = () => { fileEntry = fileReq.result || null; };
+    tx.oncomplete = () => resolve({ meta, fileEntry });
+    tx.onerror = () => reject(tx.error);
   });
+
+  if (!result.meta) return null;
+
+  // Migração transparente de registros da v1
+  if (result.meta.fileData && !result.fileEntry) {
+    const legacyFileData = result.meta.fileData;
+    const cleanMeta = { ...result.meta };
+    delete cleanMeta.fileData;
+    saveBook({ ...cleanMeta, fileData: legacyFileData }).catch(() => {});
+    return { ...cleanMeta, fileData: legacyFileData };
+  }
+
+  return {
+    ...result.meta,
+    fileData: result.fileEntry?.fileData ?? result.meta.fileData ?? null,
+  };
 }
 
+/** Carrega apenas os metadados leves da estante (sem Blobs na RAM). */
 async function getAllBooks() {
   const db = await getDB();
   return new Promise((resolve, reject) => {
@@ -90,25 +124,90 @@ async function getAllBooks() {
   });
 }
 
-/** Remove um livro completo do banco local. */
+/** Remove metadados e binário do livro do banco local. */
 async function deleteBook(id) {
   const db = await getDB();
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_BOOKS, "readwrite");
+    const tx = db.transaction([STORE_BOOKS, STORE_FILES], "readwrite");
     tx.objectStore(STORE_BOOKS).delete(id);
+    tx.objectStore(STORE_FILES).delete(id);
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
 }
 
 /* --------------------------------------------------------------------
-   Importação de arquivos
+   Utilitários globais compartilhados com reader.js
+   -------------------------------------------------------------------- */
+
+function escapeHtml(str) {
+  const div = document.createElement("div");
+  div.textContent = str || "";
+  return div.innerHTML;
+}
+
+/** Normaliza e decodifica caminhos relativos dentro de um ZIP/EPUB. */
+function resolveZipPath(baseDir, relativePath) {
+  if (!relativePath) return "";
+  const cleanRel = relativePath.split("#")[0].split("?")[0];
+  let decoded;
+  try {
+    decoded = decodeURIComponent(cleanRel);
+  } catch (_) {
+    decoded = cleanRel;
+  }
+  const combined = decoded.startsWith("/") ? decoded.slice(1) : baseDir + decoded;
+  const parts = combined.split("/");
+  const stack = [];
+  for (const part of parts) {
+    if (part === "." || part === "") continue;
+    if (part === "..") stack.pop();
+    else stack.push(part);
+  }
+  return stack.join("/");
+}
+
+/** Busca arquivo no JSZip tolerando encoding e diferença de maiúsculas/minúsculas. */
+function findZipFile(zip, path) {
+  if (!zip || !path) return null;
+  let file = zip.file(path);
+  if (file) return file;
+
+  try {
+    const decoded = decodeURIComponent(path);
+    file = zip.file(decoded);
+    if (file) return file;
+  } catch (_) {}
+
+  const lower = path.toLowerCase();
+  const matchKey = Object.keys(zip.files).find((k) => k.toLowerCase() === lower);
+  return matchKey ? zip.files[matchKey] : null;
+}
+
+let toastTimer = null;
+function showToast(message, duration = 2200) {
+  const el = document.getElementById("toast-notice");
+  if (!el) return;
+  el.textContent = message;
+  el.classList.remove("hidden");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => {
+    el.classList.add("hidden");
+  }, duration);
+}
+
+/* --------------------------------------------------------------------
+   Importação de arquivos (botão + Drag & Drop)
    -------------------------------------------------------------------- */
 
 const fileInput = document.getElementById("file-input");
 const btnImport = document.getElementById("btn-import");
 const libraryGrid = document.getElementById("library-grid");
 const emptyState = document.getElementById("empty-state");
+const emptyStateTitle = document.getElementById("empty-state-title");
+const emptyStateDesc = document.getElementById("empty-state-desc");
+const librarySearch = document.getElementById("library-search");
+const dropOverlay = document.getElementById("drop-overlay");
 const loadingOverlay = document.getElementById("loading-overlay");
 const loadingLabel = document.getElementById("loading-label");
 
@@ -122,34 +221,82 @@ function hideLoading() {
 
 btnImport.addEventListener("click", () => fileInput.click());
 
-fileInput.addEventListener("change", async (e) => {
-  const files = Array.from(e.target.files || []);
-  if (!files.length) return;
-  showLoading(files.length > 1 ? "Importando livros…" : "Importando livro…");
+async function handleImportedFiles(fileList) {
+  const files = Array.from(fileList || []).filter((f) =>
+    /\.(epub|pdf)$/i.test(f.name || "")
+  );
+  if (!files.length) {
+    showToast("Selecione arquivos .epub ou .pdf.");
+    return;
+  }
+
+  showLoading(files.length > 1 ? `Importando ${files.length} livros…` : "Importando livro…");
+  let importedCount = 0;
+
   for (const file of files) {
     try {
       await importFile(file);
+      importedCount++;
     } catch (err) {
       console.error("Falha ao importar", file.name, err);
       alert(`Não foi possível importar "${file.name}". Verifique se é um EPUB ou PDF válido.`);
     }
   }
-  fileInput.value = ""; // permite re-selecionar o mesmo arquivo depois
+
+  fileInput.value = "";
   hideLoading();
   await renderLibrary();
+
+  if (importedCount > 0) {
+    showToast(
+      importedCount === 1
+        ? "📚 Livro adicionado à estante!"
+        : `📚 ${importedCount} livros adicionados à estante!`
+    );
+  }
+}
+
+fileInput.addEventListener("change", (e) => handleImportedFiles(e.target.files));
+
+// Suporte a Drag & Drop na tela da estante
+let dragCounter = 0;
+const viewLibraryEl = document.getElementById("view-library");
+
+window.addEventListener("dragenter", (e) => {
+  if (viewLibraryEl.classList.contains("hidden")) return;
+  if (!e.dataTransfer?.types?.includes("Files")) return;
+  e.preventDefault();
+  dragCounter++;
+  dropOverlay?.classList.remove("hidden");
+});
+
+window.addEventListener("dragover", (e) => {
+  if (viewLibraryEl.classList.contains("hidden")) return;
+  if (!e.dataTransfer?.types?.includes("Files")) return;
+  e.preventDefault();
+});
+
+window.addEventListener("dragleave", () => {
+  if (viewLibraryEl.classList.contains("hidden")) return;
+  dragCounter = Math.max(0, dragCounter - 1);
+  if (dragCounter === 0) dropOverlay?.classList.add("hidden");
+});
+
+window.addEventListener("drop", (e) => {
+  if (viewLibraryEl.classList.contains("hidden")) return;
+  e.preventDefault();
+  dragCounter = 0;
+  dropOverlay?.classList.add("hidden");
+  if (e.dataTransfer?.files?.length) {
+    handleImportedFiles(e.dataTransfer.files);
+  }
 });
 
 /** Lê o arquivo escolhido, extrai metadados/capa e grava no IndexedDB. */
 async function importFile(file) {
   const ext = file.name.toLowerCase().endsWith(".pdf") ? "pdf" : "epub";
 
-  // Utiliza FileReader para maior compatibilidade de leitura do buffer em todos os navegadores
-  const arrayBuffer = await new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result);
-    reader.onerror = () => reject(reader.error);
-    reader.readAsArrayBuffer(file);
-  });
+  const arrayBuffer = await file.arrayBuffer();
 
   let title = file.name.replace(/\.(epub|pdf)$/i, "");
   let author = "";
@@ -170,16 +317,14 @@ async function importFile(file) {
   const book = {
     id: `book_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
     type: ext,
-    title,
-    author,
+    title: title.trim(),
+    author: author.trim(),
     cover: coverDataUrl,
-    fileData: file, // Salva o File (Blob) diretamente no IndexedDB
+    fileData: file,
     fileName: file.name,
     addedAt: Date.now(),
-    // Progresso de leitura (preenchido pelo reader.js)
     progress: { location: null, percent: 0, page: 0, totalPages: 0 },
-    // Preferências de leitura específicas deste livro
-    prefs: { theme: "claro", font: "sans", fontSize: 18, flow: "paginated" },
+    prefs: { theme: "claro", font: "sans", fontSize: 18, pdfZoom: 1.5 },
   };
 
   await saveBook(book);
@@ -190,57 +335,83 @@ async function extractEpubMetadata(arrayBuffer) {
   try {
     const zip = await JSZip.loadAsync(arrayBuffer);
 
-    // 1. Acha o container.xml para saber o caminho do .opf
-    const containerXmlText = await zip.file("META-INF/container.xml").async("text");
+    const containerFile = findZipFile(zip, "META-INF/container.xml");
+    if (!containerFile) return {};
+
+    const containerXmlText = await containerFile.async("text");
     const containerDoc = new DOMParser().parseFromString(containerXmlText, "text/xml");
-    const rootfilePath = containerDoc.querySelector("rootfile").getAttribute("full-path");
+    const rootfileEl = containerDoc.querySelector("rootfile");
+    const rootfilePath = rootfileEl?.getAttribute("full-path");
+    if (!rootfilePath) return {};
 
-    const rootDir = rootfilePath.includes("/") ? rootfilePath.substring(0, rootfilePath.lastIndexOf("/") + 1) : "";
+    const rootDir = rootfilePath.includes("/")
+      ? rootfilePath.substring(0, rootfilePath.lastIndexOf("/") + 1)
+      : "";
 
-    // 2. Lê e analisa o arquivo .opf
-    const opfText = await zip.file(rootfilePath).async("text");
+    const opfFile = findZipFile(zip, rootfilePath);
+    if (!opfFile) return {};
+
+    const opfText = await opfFile.async("text");
     const opfDoc = new DOMParser().parseFromString(opfText, "text/xml");
 
-    const title = opfDoc.querySelector("title")?.textContent || opfDoc.querySelector("dc\\:title")?.textContent || "";
-    const author = opfDoc.querySelector("creator")?.textContent || opfDoc.querySelector("dc\\:creator")?.textContent || "";
+    const title =
+      opfDoc.querySelector("title")?.textContent ||
+      opfDoc.getElementsByTagName("dc:title")[0]?.textContent ||
+      "";
+    const author =
+      opfDoc.querySelector("creator")?.textContent ||
+      opfDoc.getElementsByTagName("dc:creator")[0]?.textContent ||
+      "";
 
-    // Mapeia o manifesto para buscar a capa
     const manifestItems = {};
-    opfDoc.querySelectorAll("manifest > item").forEach(item => {
+    opfDoc.querySelectorAll("manifest > item").forEach((item) => {
       const id = item.getAttribute("id");
       const href = item.getAttribute("href");
-      manifestItems[id] = { href, absPath: rootDir + href, mediaType: item.getAttribute("media-type") };
+      const mediaType = item.getAttribute("media-type") || "";
+      const properties = item.getAttribute("properties") || "";
+      manifestItems[id] = {
+        id,
+        href,
+        absPath: resolveZipPath(rootDir, href),
+        mediaType,
+        properties,
+      };
     });
 
-    // Tenta encontrar a capa do livro
-    let coverId = null;
-    const coverMeta = opfDoc.querySelector("meta[name='cover']");
-    if (coverMeta) {
-      coverId = coverMeta.getAttribute("content");
-    } else {
-      const coverItem = Array.from(opfDoc.querySelectorAll("manifest > item")).find(item => {
-        const prop = item.getAttribute("properties");
-        return (prop && prop.includes("cover-image")) || item.getAttribute("id")?.toLowerCase().includes("cover");
-      });
-      if (coverItem) coverId = coverItem.getAttribute("id");
+    // 1. EPUB 3: properties="cover-image"
+    let coverItem = Object.values(manifestItems).find((i) =>
+      i.properties.split(/\s+/).includes("cover-image")
+    );
+
+    // 2. EPUB 2: <meta name="cover" content="id" />
+    if (!coverItem) {
+      const coverMeta = opfDoc.querySelector("meta[name='cover']");
+      const coverId = coverMeta?.getAttribute("content");
+      if (coverId && manifestItems[coverId]) {
+        coverItem = manifestItems[coverId];
+      }
+    }
+
+    // 3. Fallback: item de imagem cujo id ou href contenha "cover" ou "capa"
+    if (!coverItem) {
+      coverItem = Object.values(manifestItems).find(
+        (i) =>
+          i.mediaType.startsWith("image/") &&
+          (/(cover|capa)/i.test(i.id || "") || /(cover|capa)/i.test(i.href || ""))
+      );
     }
 
     let cover = null;
-    if (coverId && manifestItems[coverId]) {
-      const coverPath = manifestItems[coverId].absPath;
-      const coverFile = zip.file(coverPath);
+    if (coverItem && coverItem.mediaType.startsWith("image/")) {
+      const coverFile = findZipFile(zip, coverItem.absPath);
       if (coverFile) {
         const base64 = await coverFile.async("base64");
-        const mime = manifestItems[coverId].mediaType || "image/jpeg";
+        const mime = coverItem.mediaType || "image/jpeg";
         cover = `data:${mime};base64,${base64}`;
       }
     }
 
-    return {
-      title,
-      author,
-      cover
-    };
+    return { title, author, cover };
   } catch (err) {
     console.warn("Não foi possível ler metadados do EPUB:", err);
     return {};
@@ -256,18 +427,20 @@ async function extractPdfMetadata(arrayBuffer) {
     const pdf = await pdfjsLib.getDocument({ data: arrayBuffer.slice(0) }).promise;
     const meta = await pdf.getMetadata().catch(() => null);
 
-    // Renderiza a primeira página em um canvas pequeno para usar como "capa"
     const page = await pdf.getPage(1);
-    const viewport = page.getViewport({ scale: 0.4 });
+    const viewport = page.getViewport({ scale: 0.45 });
     const canvas = document.createElement("canvas");
     canvas.width = viewport.width;
     canvas.height = viewport.height;
     await page.render({ canvasContext: canvas.getContext("2d"), viewport }).promise;
 
+    const cover = canvas.toDataURL("image/jpeg", 0.78);
+    pdf.destroy();
+
     return {
       title: meta?.info?.Title || null,
       author: meta?.info?.Author || null,
-      cover: canvas.toDataURL("image/jpeg", 0.75),
+      cover,
     };
   } catch (err) {
     console.warn("Não foi possível ler metadados do PDF:", err);
@@ -275,27 +448,10 @@ async function extractPdfMetadata(arrayBuffer) {
   }
 }
 
-/** Converte uma URL (blob: ou http:) em data URL, para poder guardar no IndexedDB. */
-function urlToDataURL(url) {
-  return fetch(url)
-    .then((r) => r.blob())
-    .then(
-      (blob) =>
-        new Promise((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onloadend = () => resolve(reader.result);
-          reader.onerror = reject;
-          reader.readAsDataURL(blob);
-        })
-    );
-}
-
 /* --------------------------------------------------------------------
    Renderização da galeria ("Estante")
    -------------------------------------------------------------------- */
 
-// Paleta de "lombadas" — cada capa sem imagem recebe uma cor consistente
-// derivada do próprio título, para a estante nunca parecer repetitiva.
 const SPINE_PALETTE = ["#6FA089", "#C6A15B", "#8A6FA0", "#A0716F", "#6F8FA0", "#A0946F"];
 function spineColorFor(title) {
   let hash = 0;
@@ -303,55 +459,79 @@ function spineColorFor(title) {
   return SPINE_PALETTE[Math.abs(hash) % SPINE_PALETTE.length];
 }
 
-async function renderLibrary() {
-  const books = await getAllBooks();
-  books.sort((a, b) => b.addedAt - a.addedAt);
-
+function renderBookCards(books, query = "") {
   libraryGrid.innerHTML = "";
-  emptyState.classList.toggle("hidden", books.length > 0);
 
-  for (const book of books) {
+  const normalizedQuery = query.trim().toLowerCase();
+  const filtered = normalizedQuery
+    ? books.filter(
+        (b) =>
+          (b.title || "").toLowerCase().includes(normalizedQuery) ||
+          (b.author || "").toLowerCase().includes(normalizedQuery)
+      )
+    : books;
+
+  if (filtered.length === 0) {
+    emptyState.classList.remove("hidden");
+    emptyState.classList.add("flex");
+    if (normalizedQuery && books.length > 0) {
+      emptyStateTitle.textContent = "Nenhum livro encontrado";
+      emptyStateDesc.textContent = `Não encontramos resultados para "${query}".`;
+    } else {
+      emptyStateTitle.textContent = "Sua estante está vazia";
+      emptyStateDesc.textContent =
+        "Importe ou arraste um arquivo .epub ou .pdf para começar a ler. Tudo fica salvo apenas no seu dispositivo.";
+    }
+    return;
+  }
+
+  emptyState.classList.add("hidden");
+  emptyState.classList.remove("flex");
+
+  for (const book of filtered) {
     const card = document.createElement("div");
     card.className =
       "focus-ring group relative text-left rounded-lg overflow-hidden bg-[var(--ink-soft)] border border-white/5 hover:border-[var(--verdigris)]/60 transition-colors";
 
-    const spine = spineColorFor(book.title);
+    const spine = spineColorFor(book.title || "");
+    const safeTitle = escapeHtml(book.title);
+    const safeAuthor = escapeHtml(book.author || (book.type === "pdf" ? "PDF" : "EPUB"));
+
     const coverInner = book.cover
-      ? `<img src="${book.cover}" alt="" class="w-full h-44 object-cover" />`
+      ? `<img src="${book.cover}" alt="" loading="lazy" class="w-full h-44 object-cover" />`
       : `<div class="cover-fallback w-full h-44 flex items-end p-3" style="--cover-a:${spine}55;--cover-b:#1B2129">
-           <p class="font-display text-sm leading-snug text-white/90 line-clamp-4">${escapeHtml(book.title)}</p>
+           <p class="font-display text-sm leading-snug text-white/90 line-clamp-4">${safeTitle}</p>
          </div>`;
 
-    const pct = Math.round(book.progress?.percent || 0);
+    const pct = Math.min(100, Math.max(0, Math.round(book.progress?.percent || 0)));
 
     card.innerHTML = `
-      <button class="w-full text-left" aria-label="Abrir ${book.title}">
+      <button class="btn-open-book w-full text-left" aria-label="Abrir ${safeTitle}">
         <div class="book-spine" style="--spine-color:${spine}">
           ${coverInner}
         </div>
-        <div class="p-2.5 pr-8">
-          <p class="text-xs font-medium truncate">${escapeHtml(book.title)}</p>
-          <p class="text-[11px] text-white/45 truncate">${escapeHtml(book.author || (book.type === "pdf" ? "PDF" : "EPUB"))}</p>
+        <div class="p-2.5 pr-9">
+          <p class="text-xs font-medium truncate">${safeTitle}</p>
+          <p class="text-[11px] text-white/45 truncate">${safeAuthor}</p>
           ${pct > 0 ? `
             <div class="h-1 mt-2 rounded-full bg-white/10 overflow-hidden">
               <div class="h-full bg-[var(--verdigris)]" style="width:${pct}%"></div>
             </div>` : ""}
         </div>
       </button>
-      <button class="btn-delete-book absolute bottom-2.5 right-2 p-1.5 rounded-full bg-black/40 hover:bg-red-500/80 text-white/80 hover:text-white opacity-0 group-hover:opacity-100 focus:opacity-100 transition-all" title="Excluir livro" aria-label="Excluir ${book.title}">
+      <button class="btn-delete-book absolute bottom-2 right-2 p-1.5 rounded-full bg-black/45 hover:bg-red-500/85 text-white/80 hover:text-white opacity-90 sm:opacity-0 sm:group-hover:opacity-100 focus:opacity-100 transition-all" title="Excluir livro" aria-label="Excluir ${safeTitle}">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></svg>
       </button>
     `;
 
-    // Abertura do livro ao clicar no botão da capa/detalhes
-    card.querySelector("button").addEventListener("click", () => openReader(book.id));
+    card.querySelector(".btn-open-book").addEventListener("click", () => openReader(book.id));
 
-    // Exclusão do livro ao clicar na lixeira com confirmação
     card.querySelector(".btn-delete-book").addEventListener("click", async (e) => {
       e.stopPropagation();
       const confirmDelete = confirm(`Deseja mesmo excluir "${book.title}" da sua estante?`);
       if (confirmDelete) {
         await deleteBook(book.id);
+        showToast("Livro removido da estante.");
         await renderLibrary();
       }
     });
@@ -360,10 +540,16 @@ async function renderLibrary() {
   }
 }
 
-function escapeHtml(str) {
-  const div = document.createElement("div");
-  div.textContent = str || "";
-  return div.innerHTML;
+async function renderLibrary() {
+  allLibraryBooks = await getAllBooks();
+  allLibraryBooks.sort((a, b) => (b.addedAt || 0) - (a.addedAt || 0));
+  renderBookCards(allLibraryBooks, librarySearch?.value || "");
+}
+
+if (librarySearch) {
+  librarySearch.addEventListener("input", () => {
+    renderBookCards(allLibraryBooks, librarySearch.value);
+  });
 }
 
 /* --------------------------------------------------------------------
@@ -374,9 +560,6 @@ document.addEventListener("DOMContentLoaded", () => {
   renderLibrary();
 
   if ("serviceWorker" in navigator) {
-    // Registrado por último e de forma silenciosa — se falhar (ex.: ambiente
-    // sem HTTPS/localhost), o app continua funcionando normalmente, só sem
-    // o modo offline completo.
     navigator.serviceWorker.register("service-worker.js").catch((err) => {
       console.warn("Service worker não registrado:", err);
     });

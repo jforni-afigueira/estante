@@ -1,20 +1,23 @@
 /* =====================================================================
-   service-worker.js — permite instalar o app (Android/iOS/Windows) e
-   abrir o "app shell" (HTML/CSS/JS próprios) mesmo sem internet.
+   service-worker.js — PWA offline (v2)
    ---------------------------------------------------------------------
-   Observação: os livros ficam salvos no IndexedDB (não neste cache), e
-   as bibliotecas externas (Tailwind, epub.js, pdf.js) vêm de CDN — elas
-   são cacheadas na primeira visita e reaproveitadas depois, mas exigem
-   pelo menos UM acesso online inicial para ficarem disponíveis offline.
+   - App Shell local (index.html, app.js, reader.js, tts-neural.js):
+     estratégia Network-First (atualiza na hora quando há internet e
+     cai para o cache quando está offline).
+   - Bibliotecas CDN imutáveis (JSZip, PDF.js, Tailwind, fontes):
+     estratégia Cache-First com atualização em segundo plano.
+   - Pesos de modelo neural (.onnx / HuggingFace): ignorados pelo SW
+     pois o Piper TTS já os armazena nativamente no OPFS do navegador.
    ===================================================================== */
 
-const CACHE_NAME = "estante-cache-v1";
+const CACHE_NAME = "estante-cache-v2";
 
 const APP_SHELL = [
   "./",
   "./index.html",
   "./app.js",
   "./reader.js",
+  "./tts-neural.js",
   "./manifest.json",
   "./icon-192.png",
   "./icon-512.png",
@@ -36,12 +39,42 @@ self.addEventListener("activate", (event) => {
   self.clients.claim();
 });
 
-// Estratégia: "cache primeiro, com atualização em segundo plano".
-// Garante abertura instantânea do app shell mesmo offline, enquanto
-// mantém os arquivos atualizados quando há conexão.
 self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET") return;
 
+  const url = new URL(event.request.url);
+
+  // Não intercepta modelos pesados (.onnx) nem blobs locais
+  if (
+    url.protocol !== "http:" &&
+    url.protocol !== "https:"
+  ) {
+    return;
+  }
+  if (
+    url.pathname.endsWith(".onnx") ||
+    url.hostname.includes("huggingface.co")
+  ) {
+    return;
+  }
+
+  // Arquivos do próprio domínio: Network-First para entregas rápidas de updates
+  if (url.origin === self.location.origin) {
+    event.respondWith(
+      fetch(event.request)
+        .then((response) => {
+          if (response && response.status === 200) {
+            const clone = response.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
+          }
+          return response;
+        })
+        .catch(() => caches.match(event.request))
+    );
+    return;
+  }
+
+  // CDNs externas: Cache-First com atualização em segundo plano
   event.respondWith(
     caches.match(event.request).then((cached) => {
       const networkFetch = fetch(event.request)
@@ -52,7 +85,7 @@ self.addEventListener("fetch", (event) => {
           }
           return response;
         })
-        .catch(() => cached); // offline: cai para o cache se a rede falhar
+        .catch(() => cached);
 
       return cached || networkFetch;
     })

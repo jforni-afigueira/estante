@@ -14,26 +14,16 @@
 <!-- Tailwind via CDN (sem build step) -->
 <script src="https://cdn.tailwindcss.com"></script>
 
-<!-- Tipografia: Fraunces (display, com personalidade de tipografia de livro antigo)
-     e Inter (interface, alta legibilidade em telas pequenas) -->
+<!-- Tipografia: Fraunces (display) e Inter/Literata (interface e leitura) -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;1,9..144,500&family=Inter:wght@400;500;600;700&family=Literata:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet">
 
 <!-- Bibliotecas de leitura (open-source, via CDN) -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/epub.js/0.3.93/epub.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 
 <style>
   :root{
-    /* ===== Sistema de tokens — "Biblioteca Noturna" =====
-       Ink:        fundo principal (couro/tinta escura)
-       Verdigris:  acento primário (cobre oxidado — cor de lombada de livro antigo)
-       Brass:      acento secundário/metálico (marcadores, progresso)
-       Paper:      fundo claro (papel cru) — tema Claro
-       Sepia:      fundo leitura — tema Sépia
-       InkText:    texto sobre papel
-    */
     --ink:        #1B2129;
     --ink-soft:   #262E38;
     --ink-line:   #384250;
@@ -54,14 +44,12 @@
   }
   .font-display{ font-family: 'Fraunces', serif; }
 
-  /* Textura sutil de "couro" no fundo — o elemento assinatura da estante */
   .shelf-bg{
     background-image:
       radial-gradient(ellipse at top left, rgba(111,160,137,0.08), transparent 55%),
       repeating-linear-gradient(180deg, rgba(255,255,255,0.015) 0px, rgba(255,255,255,0.015) 1px, transparent 1px, transparent 40px);
   }
 
-  /* Lombada de livro — cada card da galeria tem uma barra lateral tipo lombada */
   .book-spine{
     box-shadow: inset 6px 0 0 0 var(--spine-color, var(--verdigris));
   }
@@ -83,16 +71,98 @@
   .font-serif-reader{ font-family: 'Literata', Georgia, serif; }
   .font-sans-reader{ font-family: 'Inter', sans-serif; }
 
-  /* Palavra sendo narrada — destaque dinâmico via onboundary */
+  /* Select de TOC com contraste legível em todos os temas */
+  #reader-toc option {
+    background-color: #1B2129;
+    color: #EDE6D6;
+  }
+  .theme-claro #reader-toc option { background-color: #F4EEDF; color: #2A2118; }
+  .theme-sepia #reader-toc option { background-color: #EAD9B4; color: #2A2118; }
+  .theme-escuro #reader-toc option { background-color: #1F2630; color: #DCD5C4; }
+
+  /* Tipografia limpa para capítulos EPUB renderizados no DOM */
+  .epub-body-content {
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+  }
+  .epub-body-content p {
+    margin-bottom: 1em;
+    line-height: 1.7;
+  }
+  .epub-body-content h1,
+  .epub-body-content h2,
+  .epub-body-content h3,
+  .epub-body-content h4 {
+    font-family: 'Fraunces', serif;
+    font-weight: 600;
+    line-height: 1.3;
+    margin-top: 1.4em;
+    margin-bottom: 0.65em;
+  }
+  .epub-body-content h1 { font-size: 1.55em; }
+  .epub-body-content h2 { font-size: 1.3em; }
+  .epub-body-content h3 { font-size: 1.12em; }
+  .epub-body-content img,
+  .epub-body-content svg {
+    max-width: 100%;
+    height: auto;
+    margin: 1em auto;
+    display: block;
+    border-radius: 6px;
+  }
+  .epub-body-content blockquote {
+    border-left: 3px solid var(--verdigris);
+    padding-left: 1em;
+    margin: 1em 0;
+    opacity: 0.9;
+    font-style: italic;
+  }
+  .epub-body-content ul,
+  .epub-body-content ol {
+    padding-left: 1.5em;
+    margin-bottom: 1em;
+  }
+  .epub-body-content ul { list-style: disc; }
+  .epub-body-content ol { list-style: decimal; }
+  .epub-body-content a {
+    color: var(--verdigris-dim);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+  .theme-escuro .epub-body-content a { color: var(--verdigris); }
+
+  /* Palavra clicável e destaque dinâmico do TTS */
+  .tts-word {
+    cursor: pointer;
+    border-radius: 2px;
+  }
+  .tts-word:hover {
+    background: rgba(111, 160, 137, 0.18);
+  }
+  .tts-sentence-active {
+    background: rgba(255, 229, 138, 0.28);
+    border-radius: 2px;
+  }
+  .theme-escuro .tts-sentence-active {
+    background: rgba(255, 229, 138, 0.16);
+  }
   .tts-highlight{
-    background: #FFE58A;
-    color: #241C08;
+    background: #FFE58A !important;
+    color: #241C08 !important;
     border-radius: 3px;
     padding: 0 1px;
     box-shadow: 0 0 0 2px #FFE58A;
   }
-
-  #reader-frame iframe{ border: none; }
+  .search-hit {
+    background: rgba(198, 161, 91, 0.45);
+    border-radius: 2px;
+  }
+  .search-hit-current {
+    background: #C6A15B;
+    color: #15191E;
+    border-radius: 2px;
+    box-shadow: 0 0 0 2px #C6A15B;
+  }
 
   input[type="range"]{ accent-color: var(--verdigris); }
 
@@ -108,7 +178,7 @@
     filter: invert(0.9) hue-rotate(180deg) brightness(0.9) contrast(1.1);
   }
   .theme-sepia #pdf-canvas {
-    filter: sepia(0.4) brightness(0.95) contrast(1.05);
+    filter: sepia(0.35) brightness(0.96) contrast(1.04);
   }
 
   @media (prefers-reduced-motion: reduce){
@@ -121,10 +191,10 @@
 <!-- =========================================================
      TELA 1 — ESTANTE (Galeria de livros importados)
      ========================================================= -->
-<div id="view-library" class="min-h-screen flex flex-col">
+<div id="view-library" class="min-h-screen flex flex-col relative">
 
   <header class="sticky top-0 z-20 border-b border-white/5 bg-[var(--ink)]/90 backdrop-blur">
-    <div class="max-w-5xl mx-auto px-5 py-4 flex items-center justify-between gap-4">
+    <div class="max-w-5xl mx-auto px-5 py-4 flex items-center justify-between gap-3 flex-wrap sm:flex-nowrap">
       <div class="flex items-center gap-3">
         <svg width="30" height="30" viewBox="0 0 100 100" aria-hidden="true">
           <rect width="100" height="100" rx="18" fill="#262E38"/>
@@ -132,11 +202,16 @@
         </svg>
         <h1 class="font-display text-2xl tracking-tight">Estante</h1>
       </div>
-      <div class="flex items-center gap-2">
+
+      <div class="flex items-center gap-2.5 flex-1 sm:flex-initial justify-end">
+        <div class="relative flex-1 sm:w-56 max-w-xs">
+          <input id="library-search" type="search" placeholder="Buscar na estante…" aria-label="Buscar livros na estante" class="focus-ring w-full bg-[var(--ink-soft)] border border-white/10 rounded-full pl-8 pr-3 py-1.5 text-sm text-[var(--cream-text)] placeholder:text-white/40" />
+          <svg class="absolute left-2.5 top-1/2 -translate-y-1/2 text-white/40 pointer-events-none" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
+        </div>
         <input id="file-input" type="file" accept=".epub,.pdf" multiple class="hidden" />
-        <button id="btn-import" class="focus-ring flex items-center gap-2 bg-[var(--verdigris)] hover:bg-[var(--verdigris-dim)] text-[#101613] font-medium px-4 py-2 rounded-full text-sm transition-colors">
+        <button id="btn-import" class="focus-ring flex items-center gap-2 bg-[var(--verdigris)] hover:bg-[var(--verdigris-dim)] text-[#101613] font-medium px-4 py-2 rounded-full text-sm transition-colors flex-shrink-0">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 21h16"/></svg>
-          Importar livro
+          <span class="hidden xs:inline sm:inline">Importar</span>
         </button>
       </div>
     </div>
@@ -148,12 +223,19 @@
       <svg width="56" height="56" viewBox="0 0 100 100" class="opacity-40" aria-hidden="true">
         <path d="M28 22h44v56l-22-10-22 10z" fill="none" stroke="#8B9199" stroke-width="4"/>
       </svg>
-      <p class="font-display text-xl text-[color:var(--cream-text)]/80">Sua estante está vazia</p>
-      <p class="text-sm text-white/50 max-w-sm">Importe um arquivo .epub ou .pdf para começar a ler. Tudo fica salvo apenas no seu dispositivo.</p>
+      <p id="empty-state-title" class="font-display text-xl text-[color:var(--cream-text)]/80">Sua estante está vazia</p>
+      <p id="empty-state-desc" class="text-sm text-white/50 max-w-sm">Importe ou arraste um arquivo .epub ou .pdf para começar a ler. Tudo fica salvo apenas no seu dispositivo.</p>
     </div>
 
     <div id="library-grid" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-5"></div>
   </main>
+
+  <!-- Overlay de Drag & Drop -->
+  <div id="drop-overlay" class="hidden fixed inset-0 z-40 bg-[var(--ink)]/90 backdrop-blur-sm border-4 border-dashed border-[var(--verdigris)] flex flex-col items-center justify-center gap-3 pointer-events-none">
+    <svg width="52" height="52" viewBox="0 0 24 24" fill="none" stroke="#6FA089" stroke-width="1.8"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 21h16"/></svg>
+    <p class="font-display text-2xl text-[var(--cream-text)]">Solte seus arquivos EPUB ou PDF aqui</p>
+    <p class="text-sm text-white/60">Os livros serão importados para a sua estante local</p>
+  </div>
 </div>
 
 <!-- =========================================================
@@ -162,34 +244,58 @@
 <div id="view-reader" class="hidden h-screen h-[100dvh] flex flex-col overflow-hidden theme-claro font-sans-reader" style="font-size: 18px;">
 
   <!-- Barra superior -->
-  <header class="sticky top-0 z-30 flex items-center justify-between gap-2 px-3 sm:px-5 py-2.5 border-b border-black/10 bg-inherit">
-    <button id="btn-back" aria-label="Voltar para a estante" class="focus-ring p-2 rounded-full hover:bg-black/5">
+  <header class="sticky top-0 z-30 flex items-center justify-between gap-1.5 sm:gap-2 px-2.5 sm:px-5 py-2.5 border-b border-black/10 bg-inherit">
+    <button id="btn-back" aria-label="Voltar para a estante" class="focus-ring p-2 rounded-full hover:bg-black/5 flex-shrink-0">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 18l-6-6 6-6"/></svg>
     </button>
+
     <div class="flex items-center gap-2 flex-1 justify-center min-w-0">
-      <img id="reader-cover-thumb" src="" alt="Capa" class="hidden w-6 h-8 object-cover rounded border border-white/10 shadow-sm flex-shrink-0 cursor-pointer hover:scale-110 transition-transform" />
+      <img id="reader-cover-thumb" src="" alt="Capa" title="Ver capa em tamanho cheio" class="hidden w-6 h-8 object-cover rounded border border-black/15 shadow-sm flex-shrink-0 cursor-pointer hover:scale-110 transition-transform" />
       <h2 id="reader-title" class="font-display text-sm sm:text-base truncate opacity-80"></h2>
-      <select id="reader-toc" class="hidden max-w-[120px] sm:max-w-[180px] bg-black/10 dark:bg-black/40 text-inherit border border-current/10 rounded px-1.5 py-0.5 text-xs focus-ring"></select>
+      <select id="reader-toc" aria-label="Selecionar capítulo" class="hidden max-w-[160px] sm:max-w-[260px] bg-black/10 text-inherit border border-current/15 rounded-md px-2 py-1 text-xs sm:text-sm focus-ring truncate"></select>
     </div>
-    <!-- Marcador de página manual -->
-    <button id="btn-bookmark" aria-label="Salvar marcador" title="Salvar marcador" class="focus-ring p-2 rounded-full hover:bg-black/5 text-[var(--verdigris)] transition-colors">
-      <svg id="icon-bookmark" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/>
-      </svg>
-    </button>
-    <button id="btn-a11y" aria-label="Ajustes de leitura" class="focus-ring p-2 rounded-full hover:bg-black/5">
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 21v-7M4 10V3M12 21v-11M12 6V3M20 21v-5M20 12V3M1 14h6M9 6h6M17 16h6"/></svg>
-    </button>
+
+    <div class="flex items-center gap-0.5 sm:gap-1 flex-shrink-0">
+      <!-- Indicador ativo do Sleep Timer -->
+      <span id="sleep-timer-badge" class="hidden text-[11px] font-medium px-2 py-0.5 rounded-full bg-[var(--brass)]/25 text-inherit tabular-nums mr-1"></span>
+
+      <!-- Busca no texto -->
+      <button id="btn-search-text" aria-label="Buscar no texto" title="Buscar no texto (Ctrl+F)" class="focus-ring p-2 rounded-full hover:bg-black/5 transition-colors">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
+      </button>
+
+      <!-- Marcador de página manual -->
+      <button id="btn-bookmark" aria-label="Salvar marcador" title="Salvar marcador" class="focus-ring p-2 rounded-full hover:bg-black/5 text-[var(--verdigris)] transition-colors">
+        <svg id="icon-bookmark" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/>
+        </svg>
+      </button>
+
+      <!-- Ajustes de leitura e voz -->
+      <button id="btn-a11y" aria-label="Ajustes de leitura e voz" title="Ajustes de leitura e voz" class="focus-ring p-2 rounded-full hover:bg-black/5">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 21v-7M4 10V3M12 21v-11M12 6V3M20 21v-5M20 12V3M1 14h6M9 6h6M17 16h6"/></svg>
+      </button>
+    </div>
   </header>
 
-  <!-- Área de conteúdo (epub.js ou pdf.js injetam aqui) -->
+  <!-- Barra de busca no texto (expansível) -->
+  <div id="reader-search-bar" class="hidden px-4 py-2 border-b border-black/10 bg-inherit flex items-center gap-2 text-sm">
+    <input id="reader-search-input" type="search" placeholder="Localizar neste capítulo / página…" class="focus-ring flex-1 bg-black/5 border border-current/15 rounded-md px-3 py-1 text-sm text-inherit" />
+    <span id="reader-search-count" class="text-xs opacity-70 tabular-nums min-w-[3.5rem] text-center">0/0</span>
+    <button id="btn-search-prev" aria-label="Ocorrência anterior" class="focus-ring p-1.5 rounded hover:bg-black/10">↑</button>
+    <button id="btn-search-next" aria-label="Próxima ocorrência" class="focus-ring p-1.5 rounded hover:bg-black/10">↓</button>
+    <button id="btn-search-close" aria-label="Fechar busca" class="focus-ring p-1.5 rounded hover:bg-black/10">✕</button>
+  </div>
+
+  <!-- Área de conteúdo -->
   <div id="reader-frame" class="flex-1 relative overflow-hidden"></div>
 
   <!-- Barra de progresso -->
-  <div class="px-4 py-2 border-t border-black/10 bg-inherit">
+  <div class="px-4 py-1.5 border-t border-black/10 bg-inherit">
     <div class="flex items-center gap-3 text-xs opacity-70 mb-1">
       <span id="progress-label">Página 0 de 0</span>
-      <span class="ml-auto" id="progress-percent">0%</span>
+      <span id="tts-engine-badge" class="hidden text-[10px] px-1.5 py-0.2 rounded bg-[var(--verdigris)]/20 font-medium">Neural</span>
+      <span class="ml-auto tabular-nums" id="progress-percent">0%</span>
     </div>
     <div class="h-1.5 rounded-full bg-black/10 overflow-hidden">
       <div id="progress-bar" class="h-full bg-[var(--verdigris)] rounded-full transition-all" style="width:0%"></div>
@@ -197,62 +303,58 @@
   </div>
 
   <!-- Barra de narração (TTS) e navegação -->
-  <div class="px-4 py-3 border-t border-black/10 bg-inherit flex items-center justify-between gap-4 flex-wrap sm:flex-nowrap">
+  <div class="px-3 sm:px-4 py-2.5 border-t border-black/10 bg-inherit flex items-center justify-between gap-3 flex-wrap sm:flex-nowrap">
     <!-- Velocidade (Esquerda) -->
     <div class="flex items-center gap-2 flex-shrink-0">
-      <label class="flex items-center gap-1.5 text-xs opacity-70">
-        Velocidade
+      <label class="flex items-center gap-1.5 text-xs opacity-75">
+        <span class="hidden sm:inline">Velocidade</span>
         <input id="tts-speed" type="range" min="0.5" max="3" step="0.1" value="2" class="w-20 sm:w-24 align-middle" />
-        <span id="tts-speed-val" class="tabular-nums w-8">2.0x</span>
+        <span id="tts-speed-val" class="tabular-nums w-8 font-medium">2.0x</span>
       </label>
     </div>
 
     <!-- Player Completo (Centro) -->
-    <div class="flex items-center gap-3.5 mx-auto">
-      <!-- Voltar Página -->
-      <button id="btn-prev-page" title="Página anterior" class="focus-ring p-2 rounded-full hover:bg-black/5 text-[var(--verdigris)] hover:text-[var(--verdigris-dim)] transition-colors" aria-label="Página anterior">
+    <div class="flex items-center gap-2.5 sm:gap-3.5 mx-auto">
+      <button id="btn-prev-page" title="Capítulo / Página anterior (←)" class="focus-ring p-2 rounded-full hover:bg-black/5 text-[var(--verdigris)] hover:text-[var(--verdigris-dim)] transition-colors" aria-label="Página anterior">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
       </button>
 
-      <!-- Retroceder TTS (Voltar parágrafo) -->
-      <button id="btn-tts-prev" title="Parágrafo anterior" class="focus-ring p-2 rounded-full hover:bg-black/5 text-[var(--verdigris)] hover:text-[var(--verdigris-dim)] transition-colors" aria-label="Retroceder parágrafo">
+      <button id="btn-tts-prev" title="Parágrafo anterior (Shift+←)" class="focus-ring p-2 rounded-full hover:bg-black/5 text-[var(--verdigris)] hover:text-[var(--verdigris-dim)] transition-colors" aria-label="Retroceder parágrafo">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M11 17l-5-5 5-5m7 10l-5-5 5-5"/></svg>
       </button>
 
-      <!-- Play / Pause -->
-      <button id="btn-tts-toggle" aria-label="Ouvir narração" class="focus-ring w-12 h-12 flex items-center justify-center bg-[var(--verdigris)] hover:bg-[var(--verdigris-dim)] text-[#101613] rounded-full shadow-md transition-all hover:scale-105">
+      <button id="btn-tts-toggle" aria-label="Ouvir narração" title="Ouvir / Pausar (Espaço)" class="focus-ring w-12 h-12 flex items-center justify-center bg-[var(--verdigris)] hover:bg-[var(--verdigris-dim)] text-[#101613] rounded-full shadow-md transition-all hover:scale-105 relative">
         <svg id="icon-play" width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
         <svg id="icon-pause" width="20" height="20" viewBox="0 0 24 24" fill="currentColor" class="hidden"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>
+        <svg id="icon-tts-loading" class="hidden animate-spin" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="9" stroke-opacity="0.25"/><path d="M21 12a9 9 0 00-9-9"/></svg>
       </button>
 
-      <!-- Adiantar TTS (Avançar parágrafo) -->
-      <button id="btn-tts-next" title="Próximo parágrafo" class="focus-ring p-2 rounded-full hover:bg-black/5 text-[var(--verdigris)] hover:text-[var(--verdigris-dim)] transition-colors" aria-label="Adiantar parágrafo">
+      <button id="btn-tts-next" title="Próximo parágrafo (Shift+→)" class="focus-ring p-2 rounded-full hover:bg-black/5 text-[var(--verdigris)] hover:text-[var(--verdigris-dim)] transition-colors" aria-label="Adiantar parágrafo">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M13 17l5-5-5-5M6 17l5-5-5-5"/></svg>
       </button>
 
-      <!-- Próxima Página -->
-      <button id="btn-next-page" title="Próxima página" class="focus-ring p-2 rounded-full hover:bg-black/5 text-[var(--verdigris)] hover:text-[var(--verdigris-dim)] transition-colors" aria-label="Próxima página">
+      <button id="btn-next-page" title="Próximo capítulo / página (→)" class="focus-ring p-2 rounded-full hover:bg-black/5 text-[var(--verdigris)] hover:text-[var(--verdigris-dim)] transition-colors" aria-label="Próxima página">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>
       </button>
     </div>
 
-    <!-- Espaçador invisível na direita (apenas em telas maiores) para centralizar visualmente o player -->
     <div class="hidden sm:block w-28 flex-shrink-0"></div>
   </div>
 </div>
 
 <!-- =========================================================
-     MODAL — Menu de acessibilidade / customização
+     MODAL — Menu de acessibilidade, voz e temporizador
      ========================================================= -->
 <div id="modal-a11y" class="hidden fixed inset-0 z-40 modal-backdrop flex items-end sm:items-center justify-center">
-  <div class="bg-[var(--ink-soft)] text-[var(--cream-text)] w-full sm:max-w-md rounded-t-2xl sm:rounded-2xl p-6 space-y-5 max-h-[85vh] overflow-y-auto">
+  <div class="bg-[var(--ink-soft)] text-[var(--cream-text)] w-full sm:max-w-md rounded-t-2xl sm:rounded-2xl p-6 space-y-5 max-h-[88vh] overflow-y-auto">
     <div class="flex items-center justify-between">
-      <h3 class="font-display text-lg">Ajustes de leitura</h3>
+      <h3 class="font-display text-lg">Ajustes de leitura e voz</h3>
       <button id="btn-close-a11y" aria-label="Fechar" class="focus-ring p-1 rounded-full hover:bg-white/10">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
       </button>
     </div>
 
+    <!-- Tema -->
     <div>
       <p class="text-xs uppercase tracking-wide opacity-60 mb-2">Tema</p>
       <div class="grid grid-cols-3 gap-2" id="theme-options">
@@ -262,38 +364,107 @@
       </div>
     </div>
 
-    <div>
-      <p class="text-xs uppercase tracking-wide opacity-60 mb-2">Fonte</p>
-      <div class="grid grid-cols-2 gap-2">
-        <button data-font="sans" class="focus-ring font-opt border border-white/15 rounded-lg py-2 text-sm font-sans-reader">Sans-serif</button>
-        <button data-font="serif" class="focus-ring font-opt border border-white/15 rounded-lg py-2 text-sm font-serif-reader">Serifada</button>
+    <!-- Fonte e tamanho -->
+    <div class="grid grid-cols-2 gap-4">
+      <div>
+        <p class="text-xs uppercase tracking-wide opacity-60 mb-2">Fonte</p>
+        <div class="grid grid-cols-2 gap-1.5">
+          <button data-font="sans" class="focus-ring font-opt border border-white/15 rounded-lg py-2 text-xs font-sans-reader">Sans</button>
+          <button data-font="serif" class="focus-ring font-opt border border-white/15 rounded-lg py-2 text-xs font-serif-reader">Serifada</button>
+        </div>
+      </div>
+
+      <div>
+        <p class="text-xs uppercase tracking-wide opacity-60 mb-2">Tamanho</p>
+        <div class="flex items-center justify-between gap-1">
+          <button id="font-dec" class="focus-ring w-9 h-9 rounded-full border border-white/15 text-base">A-</button>
+          <span id="font-size-val" class="text-sm tabular-nums">18px</span>
+          <button id="font-inc" class="focus-ring w-9 h-9 rounded-full border border-white/15 text-base">A+</button>
+        </div>
       </div>
     </div>
 
-    <div>
-      <p class="text-xs uppercase tracking-wide opacity-60 mb-2">Tamanho do texto</p>
+    <!-- Zoom do PDF (visível apenas quando livro atual for PDF) -->
+    <div id="pdf-zoom-section" class="hidden">
+      <p class="text-xs uppercase tracking-wide opacity-60 mb-2">Zoom da folha PDF</p>
       <div class="flex items-center gap-3">
-        <button id="font-dec" class="focus-ring w-9 h-9 rounded-full border border-white/15 text-lg">A-</button>
-        <span id="font-size-val" class="text-sm w-10 text-center tabular-nums">18px</span>
-        <button id="font-inc" class="focus-ring w-9 h-9 rounded-full border border-white/15 text-lg">A+</button>
+        <button id="pdf-zoom-dec" class="focus-ring w-9 h-9 rounded-full border border-white/15 text-lg">−</button>
+        <span id="pdf-zoom-val" class="text-sm w-12 text-center tabular-nums">150%</span>
+        <button id="pdf-zoom-inc" class="focus-ring w-9 h-9 rounded-full border border-white/15 text-lg">+</button>
+        <button id="pdf-zoom-reset" class="focus-ring ml-auto text-xs px-3 py-1.5 rounded-lg border border-white/15 hover:bg-white/10">Padrão</button>
       </div>
     </div>
 
-    <div>
-      <p class="text-xs uppercase tracking-wide opacity-60 mb-2">Modo de visualização</p>
+    <!-- Motor de Voz (TTS) -->
+    <div class="border-t border-white/10 pt-4 space-y-3">
+      <p class="text-xs uppercase tracking-wide opacity-60">Motor de voz (pt-BR)</p>
       <div class="grid grid-cols-2 gap-2">
-        <button data-flow="paginated" class="focus-ring flow-opt border border-white/15 rounded-lg py-2 text-sm">Paginado</button>
-        <button data-flow="scrolled" class="focus-ring flow-opt border border-white/15 rounded-lg py-2 text-sm">Rolagem</button>
+        <button data-engine="browser" class="focus-ring tts-engine-opt border border-white/15 rounded-lg py-2 px-2 text-xs text-center">
+          <span class="block font-medium">Navegador</span>
+          <span class="block text-[10px] opacity-60">0 MB · Instantâneo</span>
+        </button>
+        <button data-engine="neural" class="focus-ring tts-engine-opt border border-white/15 rounded-lg py-2 px-2 text-xs text-center">
+          <span class="block font-medium">Neural Offline</span>
+          <span class="block text-[10px] opacity-60">Piper pt-BR (~63 MB)</span>
+        </button>
+      </div>
+
+      <!-- Painel: Vozes do Navegador -->
+      <div id="browser-voice-panel" class="space-y-2">
+        <label class="block text-xs opacity-70" for="tts-voice-select">Voz do sistema / navegador</label>
+        <div class="flex gap-2">
+          <select id="tts-voice-select" class="focus-ring flex-1 min-w-0 bg-[var(--ink)] border border-white/15 rounded-lg px-2.5 py-2 text-xs text-[var(--cream-text)]"></select>
+          <button id="btn-test-voice" class="focus-ring px-3 py-2 rounded-lg border border-white/15 hover:bg-white/10 text-xs flex-shrink-0">Testar</button>
+        </div>
+        <p class="text-[11px] opacity-55">Dica: no Microsoft Edge há vozes neurais naturais gratuitas (Francisca / Antonio) disponíveis sem download.</p>
+      </div>
+
+      <!-- Painel: Voz Neural Offline (Piper ONNX/WASM) -->
+      <div id="neural-voice-panel" class="hidden space-y-2.5 bg-[var(--ink)]/60 rounded-xl p-3 border border-white/10">
+        <div class="flex items-center justify-between gap-2">
+          <label class="text-xs opacity-80" for="neural-voice-select">Modelo Neural (ONNX local)</label>
+          <span id="neural-cache-status" class="text-[10px] px-2 py-0.5 rounded-full bg-white/10">Não baixado</span>
+        </div>
+        <div class="flex gap-2">
+          <select id="neural-voice-select" class="focus-ring flex-1 min-w-0 bg-[var(--ink)] border border-white/15 rounded-lg px-2.5 py-1.5 text-xs text-[var(--cream-text)]">
+            <option value="pt_BR-faber-medium">Faber — Português (BR) Neural</option>
+          </select>
+          <button id="btn-download-neural" class="focus-ring px-3 py-1.5 rounded-lg bg-[var(--verdigris)] hover:bg-[var(--verdigris-dim)] text-[#101613] font-medium text-xs flex-shrink-0">Baixar</button>
+        </div>
+        <div id="neural-progress-wrap" class="hidden space-y-1">
+          <div class="flex justify-between text-[11px] opacity-75">
+            <span id="neural-progress-label">Baixando modelo…</span>
+            <span id="neural-progress-pct" class="tabular-nums">0%</span>
+          </div>
+          <div class="h-1.5 rounded-full bg-white/10 overflow-hidden">
+            <div id="neural-progress-bar" class="h-full bg-[var(--verdigris)] transition-all" style="width:0%"></div>
+          </div>
+        </div>
+        <p class="text-[11px] opacity-55">Baixa uma única vez no navegador (OPFS) e narra 100% offline, sem servidores externos.</p>
+      </div>
+    </div>
+
+    <!-- Temporizador de sono -->
+    <div class="border-t border-white/10 pt-4">
+      <p class="text-xs uppercase tracking-wide opacity-60 mb-2">Temporizador de sono (pausar narração)</p>
+      <div class="grid grid-cols-4 gap-2">
+        <button data-sleep="0" class="focus-ring sleep-opt border border-white/15 rounded-lg py-1.5 text-xs">Off</button>
+        <button data-sleep="15" class="focus-ring sleep-opt border border-white/15 rounded-lg py-1.5 text-xs">15 min</button>
+        <button data-sleep="30" class="focus-ring sleep-opt border border-white/15 rounded-lg py-1.5 text-xs">30 min</button>
+        <button data-sleep="60" class="focus-ring sleep-opt border border-white/15 rounded-lg py-1.5 text-xs">60 min</button>
       </div>
     </div>
   </div>
 </div>
 
 <!-- Overlay de carregamento -->
-<div id="loading-overlay" class="hidden fixed inset-0 z-50 bg-[var(--ink)] flex flex-col items-center justify-center gap-3">
+<div id="loading-overlay" class="hidden fixed inset-0 z-50 bg-[var(--ink)]/95 flex flex-col items-center justify-center gap-3">
   <svg class="animate-spin" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#6FA089" stroke-width="2"><circle cx="12" cy="12" r="9" stroke-opacity="0.25"/><path d="M21 12a9 9 0 00-9-9"/></svg>
   <p id="loading-label" class="text-sm text-white/70">Abrindo livro…</p>
 </div>
+
+<!-- Toast global (funciona em EPUB, PDF e Estante) -->
+<div id="toast-notice" role="status" aria-live="polite" class="hidden fixed top-16 left-1/2 -translate-x-1/2 z-50 bg-[var(--ink-soft)] text-[var(--cream-text)] border border-[var(--brass)]/50 shadow-xl px-4 py-2 rounded-full text-xs sm:text-sm font-medium pointer-events-none transition-opacity"></div>
 
 <!-- Modal para visualização da capa em tamanho cheio -->
 <div id="modal-cover-full" class="hidden fixed inset-0 z-50 modal-backdrop flex items-center justify-center p-4">
@@ -305,6 +476,7 @@
   </div>
 </div>
 
+<script type="module" src="tts-neural.js"></script>
 <script src="app.js"></script>
 <script src="reader.js"></script>
 </body>
