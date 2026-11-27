@@ -33,7 +33,7 @@ Este repositório inclui o workflow `.github/workflows/deploy.yml`, que publica 
 
 ```
 index.html         → estrutura da estante, leitor e modais
-app.js             → IndexedDB v2 (metadados + binários), importação, busca, galeria
+app.js             → IndexedDB (estante-db + estante-files-db), importação, busca, galeria
 reader.js          → motor EPUB nativo, PDF HiDPI, TTS híbrido, Media Session, busca
 tts-neural.js      → ponte ES Module para o motor neural Piper pt-BR (ONNX/WASM)
 manifest.json      → configuração de instalação (PWA)
