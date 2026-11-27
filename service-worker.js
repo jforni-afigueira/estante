@@ -10,14 +10,14 @@
      pois o Piper TTS já os armazena nativamente no OPFS do navegador.
    ===================================================================== */
 
-const CACHE_NAME = "estante-cache-v2";
+const CACHE_NAME = "estante-cache-v3";
 
 const APP_SHELL = [
   "./",
   "./index.html",
-  "./app.js",
-  "./reader.js",
-  "./tts-neural.js",
+  "./app.js?v=3",
+  "./reader.js?v=3",
+  "./tts-neural.js?v=3",
   "./manifest.json",
   "./icon-192.png",
   "./icon-512.png",

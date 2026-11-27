@@ -18,9 +18,46 @@ const STORE_FILES = "book_files";
 let dbInstance = null;
 let allLibraryBooks = [];
 
-/** Abre (ou cria/migra) o banco IndexedDB do navegador. */
+/**
+ * Abre (ou cria/migra) o banco IndexedDB do navegador.
+ * Inclui proteção contra deadlock (onblocked) quando outra aba aberta
+ * ainda segura a conexão v1: fecha automaticamente em onversionchange
+ * e, se outra aba antiga não liberar em 2s, faz fallback transparente
+ * para a versão atual do banco sem travar o carregamento do app.
+ */
 function openDatabase() {
   return new Promise((resolve, reject) => {
+    let settled = false;
+    let fallbackTimer = null;
+
+    const finalize = (db) => {
+      if (settled) {
+        try { db.close(); } catch (_) {}
+        return;
+      }
+      settled = true;
+      clearTimeout(fallbackTimer);
+      db.onversionchange = () => {
+        try { db.close(); } catch (_) {}
+        if (dbInstance === db) dbInstance = null;
+      };
+      resolve(db);
+    };
+
+    const openCurrentVersionFallback = () => {
+      if (settled) return;
+      console.warn("Upgrade IndexedDB v2 bloqueado por outra aba; usando versão atual em modo compatibilidade.");
+      const fallbackReq = indexedDB.open(DB_NAME);
+      fallbackReq.onsuccess = (ev) => finalize(ev.target.result);
+      fallbackReq.onerror = (ev) => {
+        if (!settled) {
+          settled = true;
+          clearTimeout(fallbackTimer);
+          reject(ev.target.error);
+        }
+      };
+    };
+
     const request = indexedDB.open(DB_NAME, DB_VERSION);
 
     request.onupgradeneeded = (event) => {
@@ -34,8 +71,22 @@ function openDatabase() {
       }
     };
 
-    request.onsuccess = (event) => resolve(event.target.result);
-    request.onerror = (event) => reject(event.target.error);
+    request.onblocked = () => {
+      clearTimeout(fallbackTimer);
+      fallbackTimer = setTimeout(openCurrentVersionFallback, 800);
+    };
+
+    // Segurança extra: se o navegador não disparar onblocked mas travar a abertura
+    fallbackTimer = setTimeout(openCurrentVersionFallback, 2500);
+
+    request.onsuccess = (event) => finalize(event.target.result);
+    request.onerror = (event) => {
+      if (!settled) {
+        settled = true;
+        clearTimeout(fallbackTimer);
+        reject(event.target.error);
+      }
+    };
   });
 }
 
@@ -44,9 +95,22 @@ async function getDB() {
   return dbInstance;
 }
 
-/** Salva metadados em STORE_BOOKS e o Blob binário em STORE_FILES. */
+function hasFilesStore(db) {
+  return db && db.objectStoreNames.contains(STORE_FILES);
+}
+
+/** Salva metadados em STORE_BOOKS e o Blob binário em STORE_FILES (ou em STORE_BOOKS no modo v1). */
 async function saveBook(book) {
   const db = await getDB();
+  if (!hasFilesStore(db)) {
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_BOOKS, "readwrite");
+      tx.objectStore(STORE_BOOKS).put(book);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
   const { fileData, ...meta } = book;
   return new Promise((resolve, reject) => {
     const tx = db.transaction([STORE_BOOKS, STORE_FILES], "readwrite");
@@ -78,11 +142,19 @@ async function patchBook(id, patch) {
 
 /**
  * Carrega um livro completo (metadados + fileData binário).
- * Se o registro vier da v1 (com fileData ainda embutido em STORE_BOOKS),
- * migra silenciosamente o binário para STORE_FILES.
+ * Funciona tanto no schema v2 (2 stores) quanto no fallback v1 (1 store).
  */
 async function getBook(id) {
   const db = await getDB();
+  if (!hasFilesStore(db)) {
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_BOOKS, "readonly");
+      const req = tx.objectStore(STORE_BOOKS).get(id);
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => reject(req.error);
+    });
+  }
+
   const result = await new Promise((resolve, reject) => {
     const tx = db.transaction([STORE_BOOKS, STORE_FILES], "readonly");
     const metaReq = tx.objectStore(STORE_BOOKS).get(id);
@@ -113,7 +185,7 @@ async function getBook(id) {
   };
 }
 
-/** Carrega apenas os metadados leves da estante (sem Blobs na RAM). */
+/** Carrega apenas os metadados leves da estante (sem Blobs na RAM na v2). */
 async function getAllBooks() {
   const db = await getDB();
   return new Promise((resolve, reject) => {
@@ -127,6 +199,15 @@ async function getAllBooks() {
 /** Remove metadados e binário do livro do banco local. */
 async function deleteBook(id) {
   const db = await getDB();
+  if (!hasFilesStore(db)) {
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_BOOKS, "readwrite");
+      tx.objectStore(STORE_BOOKS).delete(id);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
   return new Promise((resolve, reject) => {
     const tx = db.transaction([STORE_BOOKS, STORE_FILES], "readwrite");
     tx.objectStore(STORE_BOOKS).delete(id);
@@ -233,18 +314,21 @@ async function handleImportedFiles(fileList) {
   showLoading(files.length > 1 ? `Importando ${files.length} livros…` : "Importando livro…");
   let importedCount = 0;
 
-  for (const file of files) {
-    try {
-      await importFile(file);
-      importedCount++;
-    } catch (err) {
-      console.error("Falha ao importar", file.name, err);
-      alert(`Não foi possível importar "${file.name}". Verifique se é um EPUB ou PDF válido.`);
+  try {
+    for (const file of files) {
+      try {
+        await importFile(file);
+        importedCount++;
+      } catch (err) {
+        console.error("Falha ao importar", file.name, err);
+        alert(`Não foi possível importar "${file.name}". Verifique se é um EPUB ou PDF válido.`);
+      }
     }
+  } finally {
+    fileInput.value = "";
+    hideLoading();
   }
 
-  fileInput.value = "";
-  hideLoading();
   await renderLibrary();
 
   if (importedCount > 0) {
@@ -541,9 +625,16 @@ function renderBookCards(books, query = "") {
 }
 
 async function renderLibrary() {
-  allLibraryBooks = await getAllBooks();
-  allLibraryBooks.sort((a, b) => (b.addedAt || 0) - (a.addedAt || 0));
-  renderBookCards(allLibraryBooks, librarySearch?.value || "");
+  try {
+    allLibraryBooks = await getAllBooks();
+    allLibraryBooks.sort((a, b) => (b.addedAt || 0) - (a.addedAt || 0));
+    renderBookCards(allLibraryBooks, librarySearch?.value || "");
+  } catch (err) {
+    console.error("Erro ao carregar biblioteca do IndexedDB:", err);
+    allLibraryBooks = [];
+    renderBookCards([], "");
+    showToast("Não foi possível acessar o armazenamento local do navegador.", 4000);
+  }
 }
 
 if (librarySearch) {
@@ -556,12 +647,23 @@ if (librarySearch) {
    Inicialização + registro do Service Worker (PWA)
    -------------------------------------------------------------------- */
 
-document.addEventListener("DOMContentLoaded", () => {
+function bootEstante() {
   renderLibrary();
 
   if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("service-worker.js").catch((err) => {
-      console.warn("Service worker não registrado:", err);
-    });
+    navigator.serviceWorker
+      .register("service-worker.js")
+      .then((reg) => {
+        reg.update().catch(() => {});
+      })
+      .catch((err) => {
+        console.warn("Service worker não registrado:", err);
+      });
   }
-});
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", bootEstante);
+} else {
+  bootEstante();
+}
