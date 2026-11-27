@@ -10,24 +10,27 @@
      via toast global.
    ===================================================================== */
 
-const DB_META_NAME = "estante-db";
-const DB_FILES_NAME = "estante-files-db";
+const DB_NAME = "estante-v2-db";
+const DB_VERSION = 1;
+const LEGACY_DB_NAME = "estante-db";
+const LEGACY_MIGRATED_KEY = "estante_migrated_from_v1";
 const STORE_BOOKS = "books";
 const STORE_FILES = "book_files";
 
-let metaDbInstance = null;
-let filesDbInstance = null;
+let dbInstance = null;
 let allLibraryBooks = [];
 
 /**
- * Abre o banco de metadados (estante-db) SEM forçar troca de versão:
- * - Se não existir, o navegador cria na v1 (criando STORE_BOOKS).
- * - Se já existir na v1 (mesmo com abas antigas abertas!) ou na v2,
- *   abre instantaneamente sem deadlock (onblocked) e sem VersionError.
+ * Abre o banco principal (estante-v2-db, v1) com duas stores separadas:
+ * - books (metadados leves, capa e progresso)
+ * - book_files (Blob binário carregado só ao abrir o livro)
+ * Por usar um nome limpo e nunca exigir upgrade de versão sobre estante-db,
+ * abre instantaneamente mesmo se outra aba do navegador estiver com
+ * estante-db travado na fila do IndexedDB.
  */
-function openMetaDatabase() {
+function openDatabase() {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_META_NAME);
+    const request = indexedDB.open(DB_NAME, DB_VERSION);
 
     request.onupgradeneeded = (event) => {
       const db = event.target.result;
@@ -35,31 +38,6 @@ function openMetaDatabase() {
         const store = db.createObjectStore(STORE_BOOKS, { keyPath: "id" });
         store.createIndex("title", "title", { unique: false });
       }
-    };
-
-    request.onsuccess = (event) => {
-      const db = event.target.result;
-      db.onversionchange = () => {
-        try { db.close(); } catch (_) {}
-        if (metaDbInstance === db) metaDbInstance = null;
-      };
-      resolve(db);
-    };
-    request.onerror = (event) => reject(event.target.error);
-  });
-}
-
-/**
- * Abre o banco dedicado aos binários (estante-files-db v1).
- * Separar os arquivos em um banco próprio evita qualquer bloqueio
- * de upgrade no estante-db e mantém a abertura da estante leve na RAM.
- */
-function openFilesDatabase() {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_FILES_NAME, 1);
-
-    request.onupgradeneeded = (event) => {
-      const db = event.target.result;
       if (!db.objectStoreNames.contains(STORE_FILES)) {
         db.createObjectStore(STORE_FILES, { keyPath: "id" });
       }
@@ -69,7 +47,7 @@ function openFilesDatabase() {
       const db = event.target.result;
       db.onversionchange = () => {
         try { db.close(); } catch (_) {}
-        if (filesDbInstance === db) filesDbInstance = null;
+        if (dbInstance === db) dbInstance = null;
       };
       resolve(db);
     };
@@ -77,33 +55,106 @@ function openFilesDatabase() {
   });
 }
 
-async function getMetaDB() {
-  if (!metaDbInstance) metaDbInstance = await openMetaDatabase();
-  return metaDbInstance;
+async function getDB() {
+  if (!dbInstance) dbInstance = await openDatabase();
+  return dbInstance;
 }
 
-async function getFilesDB() {
-  if (!filesDbInstance) filesDbInstance = await openFilesDatabase();
-  return filesDbInstance;
-}
+/**
+ * Migra em segundo plano (sem travar a UI) livros que existiam no
+ * banco legado estante-db. Se o banco legado estiver bloqueado por
+ * outra aba antiga, desiste em 1.2s e tenta novamente numa próxima visita.
+ */
+async function migrateLegacyBooksInBackground() {
+  if (localStorage.getItem(LEGACY_MIGRATED_KEY) === "1") return;
 
-/** Salva metadados leves em estante-db e o binário em estante-files-db. */
-async function saveBook(book) {
-  const [metaDb, filesDb] = await Promise.all([getMetaDB(), getFilesDB()]);
-  const { fileData, ...meta } = book;
+  try {
+    // Se o navegador suporta indexedDB.databases(), evita até tentar abrir se não existir
+    if (typeof indexedDB.databases === "function") {
+      const dbs = await indexedDB.databases();
+      if (!dbs.some((d) => d.name === LEGACY_DB_NAME)) {
+        localStorage.setItem(LEGACY_MIGRATED_KEY, "1");
+        return;
+      }
+    }
 
-  if (fileData !== undefined) {
-    await new Promise((resolve, reject) => {
-      const tx = filesDb.transaction(STORE_FILES, "readwrite");
-      tx.objectStore(STORE_FILES).put({ id: meta.id, fileData });
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error);
+    const legacyDb = await new Promise((resolve) => {
+      let done = false;
+      const finish = (val) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        resolve(val);
+      };
+      const timer = setTimeout(() => finish(null), 1200);
+      const req = indexedDB.open(LEGACY_DB_NAME);
+      req.onsuccess = (ev) => finish(ev.target.result);
+      req.onerror = () => finish(null);
+      req.onblocked = () => finish(null);
     });
-  }
 
-  await new Promise((resolve, reject) => {
-    const tx = metaDb.transaction(STORE_BOOKS, "readwrite");
+    if (!legacyDb) return; // bloqueado no momento — tenta depois sem afetar o app
+
+    try {
+      if (!legacyDb.objectStoreNames.contains(STORE_BOOKS)) {
+        localStorage.setItem(LEGACY_MIGRATED_KEY, "1");
+        return;
+      }
+
+      const legacyBooks = await new Promise((resolve) => {
+        const tx = legacyDb.transaction(STORE_BOOKS, "readonly");
+        const req = tx.objectStore(STORE_BOOKS).getAll();
+        req.onsuccess = () => resolve(req.result || []);
+        req.onerror = () => resolve([]);
+      });
+
+      const hasLegacyFiles = legacyDb.objectStoreNames.contains(STORE_FILES);
+      let migratedCount = 0;
+
+      for (const item of legacyBooks) {
+        if (!item?.id) continue;
+        const alreadyExists = await getBook(item.id);
+        if (alreadyExists) continue;
+
+        let fileData = item.fileData || null;
+        if (!fileData && hasLegacyFiles) {
+          const entry = await new Promise((resolve) => {
+            const tx = legacyDb.transaction(STORE_FILES, "readonly");
+            const req = tx.objectStore(STORE_FILES).get(item.id);
+            req.onsuccess = () => resolve(req.result || null);
+            req.onerror = () => resolve(null);
+          });
+          fileData = entry?.fileData || null;
+        }
+
+        if (fileData) {
+          await saveBook({ ...item, fileData });
+          migratedCount++;
+        }
+      }
+
+      localStorage.setItem(LEGACY_MIGRATED_KEY, "1");
+      if (migratedCount > 0) {
+        await renderLibrary();
+      }
+    } finally {
+      try { legacyDb.close(); } catch (_) {}
+    }
+  } catch (err) {
+    console.warn("Migração em segundo plano ignorada:", err);
+  }
+}
+
+/** Salva metadados leves em STORE_BOOKS e o binário em STORE_FILES. */
+async function saveBook(book) {
+  const db = await getDB();
+  const { fileData, ...meta } = book;
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction([STORE_BOOKS, STORE_FILES], "readwrite");
     tx.objectStore(STORE_BOOKS).put(meta);
+    if (fileData !== undefined) {
+      tx.objectStore(STORE_FILES).put({ id: meta.id, fileData });
+    }
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
@@ -111,9 +162,9 @@ async function saveBook(book) {
 
 /** Atualiza apenas campos leves de metadados (progresso, preferências). */
 async function patchBook(id, patch) {
-  const metaDb = await getMetaDB();
+  const db = await getDB();
   return new Promise((resolve, reject) => {
-    const tx = metaDb.transaction(STORE_BOOKS, "readwrite");
+    const tx = db.transaction(STORE_BOOKS, "readwrite");
     const store = tx.objectStore(STORE_BOOKS);
     const getReq = store.get(id);
     getReq.onsuccess = () => {
@@ -126,88 +177,47 @@ async function patchBook(id, patch) {
   });
 }
 
-/**
- * Carrega um livro completo (metadados + fileData binário).
- * Compatível com registros novos (estante-files-db), registros v2
- * (store book_files dentro de estante-db) e registros legados v1.
- */
+/** Carrega um livro completo (metadados + fileData binário). */
 async function getBook(id) {
-  const [metaDb, filesDb] = await Promise.all([getMetaDB(), getFilesDB()]);
+  const db = await getDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction([STORE_BOOKS, STORE_FILES], "readonly");
+    const metaReq = tx.objectStore(STORE_BOOKS).get(id);
+    const fileReq = tx.objectStore(STORE_FILES).get(id);
+    let meta = null;
+    let fileEntry = null;
 
-  const meta = await new Promise((resolve, reject) => {
-    const tx = metaDb.transaction(STORE_BOOKS, "readonly");
-    const req = tx.objectStore(STORE_BOOKS).get(id);
-    req.onsuccess = () => resolve(req.result || null);
-    req.onerror = () => reject(req.error);
+    metaReq.onsuccess = () => { meta = metaReq.result || null; };
+    fileReq.onsuccess = () => { fileEntry = fileReq.result || null; };
+    tx.oncomplete = () => {
+      if (!meta) return resolve(null);
+      resolve({ ...meta, fileData: fileEntry?.fileData ?? null });
+    };
+    tx.onerror = () => reject(tx.error);
   });
-  if (!meta) return null;
-
-  let fileEntry = await new Promise((resolve, reject) => {
-    const tx = filesDb.transaction(STORE_FILES, "readonly");
-    const req = tx.objectStore(STORE_FILES).get(id);
-    req.onsuccess = () => resolve(req.result || null);
-    req.onerror = () => reject(req.error);
-  });
-
-  // Fallback caso o binário tenha sido salvo na store book_files do estante-db v2
-  if (!fileEntry && metaDb.objectStoreNames.contains(STORE_FILES)) {
-    fileEntry = await new Promise((resolve, reject) => {
-      const tx = metaDb.transaction(STORE_FILES, "readonly");
-      const req = tx.objectStore(STORE_FILES).get(id);
-      req.onsuccess = () => resolve(req.result || null);
-      req.onerror = () => reject(req.error);
-    });
-  }
-
-  // Migração silenciosa de registros legados v1 (fileData embutido em meta)
-  if (!fileEntry && meta.fileData) {
-    const legacyFileData = meta.fileData;
-    const cleanMeta = { ...meta };
-    delete cleanMeta.fileData;
-    saveBook({ ...cleanMeta, fileData: legacyFileData }).catch(() => {});
-    return { ...cleanMeta, fileData: legacyFileData };
-  }
-
-  return {
-    ...meta,
-    fileData: fileEntry?.fileData ?? meta.fileData ?? null,
-  };
 }
 
 /** Carrega apenas os metadados leves da estante (sem Blobs na RAM). */
 async function getAllBooks() {
-  const metaDb = await getMetaDB();
+  const db = await getDB();
   return new Promise((resolve, reject) => {
-    const tx = metaDb.transaction(STORE_BOOKS, "readonly");
+    const tx = db.transaction(STORE_BOOKS, "readonly");
     const req = tx.objectStore(STORE_BOOKS).getAll();
     req.onsuccess = () => resolve(req.result || []);
     req.onerror = () => reject(req.error);
   });
 }
 
-/** Remove metadados e binário do livro dos bancos locais. */
+/** Remove metadados e binário do livro do banco local. */
 async function deleteBook(id) {
-  const [metaDb, filesDb] = await Promise.all([getMetaDB(), getFilesDB()]);
-
-  const metaStores = metaDb.objectStoreNames.contains(STORE_FILES)
-    ? [STORE_BOOKS, STORE_FILES]
-    : [STORE_BOOKS];
-
-  await Promise.all([
-    new Promise((resolve, reject) => {
-      const tx = metaDb.transaction(metaStores, "readwrite");
-      tx.objectStore(STORE_BOOKS).delete(id);
-      if (metaStores.includes(STORE_FILES)) tx.objectStore(STORE_FILES).delete(id);
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error);
-    }),
-    new Promise((resolve, reject) => {
-      const tx = filesDb.transaction(STORE_FILES, "readwrite");
-      tx.objectStore(STORE_FILES).delete(id);
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error);
-    }),
-  ]);
+  const db = await getDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction([STORE_BOOKS, STORE_FILES], "readwrite");
+    tx.objectStore(STORE_BOOKS).delete(id);
+    tx.objectStore(STORE_FILES).delete(id);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
 }
 
 /* --------------------------------------------------------------------
@@ -641,7 +651,9 @@ if (librarySearch) {
    -------------------------------------------------------------------- */
 
 function bootEstante() {
-  renderLibrary();
+  renderLibrary().then(() => {
+    migrateLegacyBooksInBackground();
+  });
 
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker
