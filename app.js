@@ -10,55 +10,24 @@
      via toast global.
    ===================================================================== */
 
-const DB_NAME = "estante-db";
-const DB_VERSION = 2;
+const DB_META_NAME = "estante-db";
+const DB_FILES_NAME = "estante-files-db";
 const STORE_BOOKS = "books";
 const STORE_FILES = "book_files";
 
-let dbInstance = null;
+let metaDbInstance = null;
+let filesDbInstance = null;
 let allLibraryBooks = [];
 
 /**
- * Abre (ou cria/migra) o banco IndexedDB do navegador.
- * Inclui proteção contra deadlock (onblocked) quando outra aba aberta
- * ainda segura a conexão v1: fecha automaticamente em onversionchange
- * e, se outra aba antiga não liberar em 2s, faz fallback transparente
- * para a versão atual do banco sem travar o carregamento do app.
+ * Abre o banco de metadados (estante-db) SEM forçar troca de versão:
+ * - Se não existir, o navegador cria na v1 (criando STORE_BOOKS).
+ * - Se já existir na v1 (mesmo com abas antigas abertas!) ou na v2,
+ *   abre instantaneamente sem deadlock (onblocked) e sem VersionError.
  */
-function openDatabase() {
+function openMetaDatabase() {
   return new Promise((resolve, reject) => {
-    let settled = false;
-    let fallbackTimer = null;
-
-    const finalize = (db) => {
-      if (settled) {
-        try { db.close(); } catch (_) {}
-        return;
-      }
-      settled = true;
-      clearTimeout(fallbackTimer);
-      db.onversionchange = () => {
-        try { db.close(); } catch (_) {}
-        if (dbInstance === db) dbInstance = null;
-      };
-      resolve(db);
-    };
-
-    const openCurrentVersionFallback = () => {
-      if (settled) return;
-      console.warn("Upgrade IndexedDB v2 bloqueado por outra aba; usando versão atual em modo compatibilidade.");
-      const fallbackReq = indexedDB.open(DB_NAME);
-      fallbackReq.onsuccess = (ev) => finalize(ev.target.result);
-      fallbackReq.onerror = (ev) => {
-        if (!settled) {
-          settled = true;
-          clearTimeout(fallbackTimer);
-          reject(ev.target.error);
-        }
-      };
-    };
-
-    const request = indexedDB.open(DB_NAME, DB_VERSION);
+    const request = indexedDB.open(DB_META_NAME);
 
     request.onupgradeneeded = (event) => {
       const db = event.target.result;
@@ -66,58 +35,75 @@ function openDatabase() {
         const store = db.createObjectStore(STORE_BOOKS, { keyPath: "id" });
         store.createIndex("title", "title", { unique: false });
       }
+    };
+
+    request.onsuccess = (event) => {
+      const db = event.target.result;
+      db.onversionchange = () => {
+        try { db.close(); } catch (_) {}
+        if (metaDbInstance === db) metaDbInstance = null;
+      };
+      resolve(db);
+    };
+    request.onerror = (event) => reject(event.target.error);
+  });
+}
+
+/**
+ * Abre o banco dedicado aos binários (estante-files-db v1).
+ * Separar os arquivos em um banco próprio evita qualquer bloqueio
+ * de upgrade no estante-db e mantém a abertura da estante leve na RAM.
+ */
+function openFilesDatabase() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB_FILES_NAME, 1);
+
+    request.onupgradeneeded = (event) => {
+      const db = event.target.result;
       if (!db.objectStoreNames.contains(STORE_FILES)) {
         db.createObjectStore(STORE_FILES, { keyPath: "id" });
       }
     };
 
-    request.onblocked = () => {
-      clearTimeout(fallbackTimer);
-      fallbackTimer = setTimeout(openCurrentVersionFallback, 800);
+    request.onsuccess = (event) => {
+      const db = event.target.result;
+      db.onversionchange = () => {
+        try { db.close(); } catch (_) {}
+        if (filesDbInstance === db) filesDbInstance = null;
+      };
+      resolve(db);
     };
-
-    // Segurança extra: se o navegador não disparar onblocked mas travar a abertura
-    fallbackTimer = setTimeout(openCurrentVersionFallback, 2500);
-
-    request.onsuccess = (event) => finalize(event.target.result);
-    request.onerror = (event) => {
-      if (!settled) {
-        settled = true;
-        clearTimeout(fallbackTimer);
-        reject(event.target.error);
-      }
-    };
+    request.onerror = (event) => reject(event.target.error);
   });
 }
 
-async function getDB() {
-  if (!dbInstance) dbInstance = await openDatabase();
-  return dbInstance;
+async function getMetaDB() {
+  if (!metaDbInstance) metaDbInstance = await openMetaDatabase();
+  return metaDbInstance;
 }
 
-function hasFilesStore(db) {
-  return db && db.objectStoreNames.contains(STORE_FILES);
+async function getFilesDB() {
+  if (!filesDbInstance) filesDbInstance = await openFilesDatabase();
+  return filesDbInstance;
 }
 
-/** Salva metadados em STORE_BOOKS e o Blob binário em STORE_FILES (ou em STORE_BOOKS no modo v1). */
+/** Salva metadados leves em estante-db e o binário em estante-files-db. */
 async function saveBook(book) {
-  const db = await getDB();
-  if (!hasFilesStore(db)) {
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction(STORE_BOOKS, "readwrite");
-      tx.objectStore(STORE_BOOKS).put(book);
+  const [metaDb, filesDb] = await Promise.all([getMetaDB(), getFilesDB()]);
+  const { fileData, ...meta } = book;
+
+  if (fileData !== undefined) {
+    await new Promise((resolve, reject) => {
+      const tx = filesDb.transaction(STORE_FILES, "readwrite");
+      tx.objectStore(STORE_FILES).put({ id: meta.id, fileData });
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);
     });
   }
 
-  const { fileData, ...meta } = book;
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction([STORE_BOOKS, STORE_FILES], "readwrite");
+  await new Promise((resolve, reject) => {
+    const tx = metaDb.transaction(STORE_BOOKS, "readwrite");
     tx.objectStore(STORE_BOOKS).put(meta);
-    if (fileData !== undefined) {
-      tx.objectStore(STORE_FILES).put({ id: meta.id, fileData });
-    }
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
@@ -125,9 +111,9 @@ async function saveBook(book) {
 
 /** Atualiza apenas campos leves de metadados (progresso, preferências). */
 async function patchBook(id, patch) {
-  const db = await getDB();
+  const metaDb = await getMetaDB();
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_BOOKS, "readwrite");
+    const tx = metaDb.transaction(STORE_BOOKS, "readwrite");
     const store = tx.objectStore(STORE_BOOKS);
     const getReq = store.get(id);
     getReq.onsuccess = () => {
@@ -142,79 +128,86 @@ async function patchBook(id, patch) {
 
 /**
  * Carrega um livro completo (metadados + fileData binário).
- * Funciona tanto no schema v2 (2 stores) quanto no fallback v1 (1 store).
+ * Compatível com registros novos (estante-files-db), registros v2
+ * (store book_files dentro de estante-db) e registros legados v1.
  */
 async function getBook(id) {
-  const db = await getDB();
-  if (!hasFilesStore(db)) {
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction(STORE_BOOKS, "readonly");
-      const req = tx.objectStore(STORE_BOOKS).get(id);
+  const [metaDb, filesDb] = await Promise.all([getMetaDB(), getFilesDB()]);
+
+  const meta = await new Promise((resolve, reject) => {
+    const tx = metaDb.transaction(STORE_BOOKS, "readonly");
+    const req = tx.objectStore(STORE_BOOKS).get(id);
+    req.onsuccess = () => resolve(req.result || null);
+    req.onerror = () => reject(req.error);
+  });
+  if (!meta) return null;
+
+  let fileEntry = await new Promise((resolve, reject) => {
+    const tx = filesDb.transaction(STORE_FILES, "readonly");
+    const req = tx.objectStore(STORE_FILES).get(id);
+    req.onsuccess = () => resolve(req.result || null);
+    req.onerror = () => reject(req.error);
+  });
+
+  // Fallback caso o binário tenha sido salvo na store book_files do estante-db v2
+  if (!fileEntry && metaDb.objectStoreNames.contains(STORE_FILES)) {
+    fileEntry = await new Promise((resolve, reject) => {
+      const tx = metaDb.transaction(STORE_FILES, "readonly");
+      const req = tx.objectStore(STORE_FILES).get(id);
       req.onsuccess = () => resolve(req.result || null);
       req.onerror = () => reject(req.error);
     });
   }
 
-  const result = await new Promise((resolve, reject) => {
-    const tx = db.transaction([STORE_BOOKS, STORE_FILES], "readonly");
-    const metaReq = tx.objectStore(STORE_BOOKS).get(id);
-    const fileReq = tx.objectStore(STORE_FILES).get(id);
-    let meta = null;
-    let fileEntry = null;
-
-    metaReq.onsuccess = () => { meta = metaReq.result || null; };
-    fileReq.onsuccess = () => { fileEntry = fileReq.result || null; };
-    tx.oncomplete = () => resolve({ meta, fileEntry });
-    tx.onerror = () => reject(tx.error);
-  });
-
-  if (!result.meta) return null;
-
-  // Migração transparente de registros da v1
-  if (result.meta.fileData && !result.fileEntry) {
-    const legacyFileData = result.meta.fileData;
-    const cleanMeta = { ...result.meta };
+  // Migração silenciosa de registros legados v1 (fileData embutido em meta)
+  if (!fileEntry && meta.fileData) {
+    const legacyFileData = meta.fileData;
+    const cleanMeta = { ...meta };
     delete cleanMeta.fileData;
     saveBook({ ...cleanMeta, fileData: legacyFileData }).catch(() => {});
     return { ...cleanMeta, fileData: legacyFileData };
   }
 
   return {
-    ...result.meta,
-    fileData: result.fileEntry?.fileData ?? result.meta.fileData ?? null,
+    ...meta,
+    fileData: fileEntry?.fileData ?? meta.fileData ?? null,
   };
 }
 
-/** Carrega apenas os metadados leves da estante (sem Blobs na RAM na v2). */
+/** Carrega apenas os metadados leves da estante (sem Blobs na RAM). */
 async function getAllBooks() {
-  const db = await getDB();
+  const metaDb = await getMetaDB();
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_BOOKS, "readonly");
+    const tx = metaDb.transaction(STORE_BOOKS, "readonly");
     const req = tx.objectStore(STORE_BOOKS).getAll();
     req.onsuccess = () => resolve(req.result || []);
     req.onerror = () => reject(req.error);
   });
 }
 
-/** Remove metadados e binário do livro do banco local. */
+/** Remove metadados e binário do livro dos bancos locais. */
 async function deleteBook(id) {
-  const db = await getDB();
-  if (!hasFilesStore(db)) {
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction(STORE_BOOKS, "readwrite");
+  const [metaDb, filesDb] = await Promise.all([getMetaDB(), getFilesDB()]);
+
+  const metaStores = metaDb.objectStoreNames.contains(STORE_FILES)
+    ? [STORE_BOOKS, STORE_FILES]
+    : [STORE_BOOKS];
+
+  await Promise.all([
+    new Promise((resolve, reject) => {
+      const tx = metaDb.transaction(metaStores, "readwrite");
       tx.objectStore(STORE_BOOKS).delete(id);
+      if (metaStores.includes(STORE_FILES)) tx.objectStore(STORE_FILES).delete(id);
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);
-    });
-  }
-
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction([STORE_BOOKS, STORE_FILES], "readwrite");
-    tx.objectStore(STORE_BOOKS).delete(id);
-    tx.objectStore(STORE_FILES).delete(id);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  });
+    }),
+    new Promise((resolve, reject) => {
+      const tx = filesDb.transaction(STORE_FILES, "readwrite");
+      tx.objectStore(STORE_FILES).delete(id);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    }),
+  ]);
 }
 
 /* --------------------------------------------------------------------
